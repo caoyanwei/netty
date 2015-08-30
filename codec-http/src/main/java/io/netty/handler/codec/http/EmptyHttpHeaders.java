@@ -16,61 +16,234 @@
 
 package io.netty.handler.codec.http;
 
-import io.netty.handler.codec.EmptyTextHeaders;
-import io.netty.handler.codec.TextHeaderProcessor;
-import io.netty.handler.codec.TextHeaders;
+import java.util.Collections;
+import java.util.Iterator;
+import java.util.List;
+import java.util.NoSuchElementException;
+import java.util.Map.Entry;
 
-public class EmptyHttpHeaders extends EmptyTextHeaders implements HttpHeaders {
+import io.netty.handler.codec.EmptyHeaders;
+import io.netty.handler.codec.Headers;
+
+public class EmptyHttpHeaders extends EmptyHeaders<CharSequence> implements HttpHeaders {
 
     public static final EmptyHttpHeaders INSTANCE = new EmptyHttpHeaders();
+    private static final Iterator<Entry<String, String>> EMPTY_STRING_ITERATOR =
+            new Iterator<Entry<String, String>>() {
+                @Override
+                public boolean hasNext() {
+                    return false;
+                }
 
-    protected EmptyHttpHeaders() { }
+                @Override
+                public Entry<String, String> next() {
+                    throw new NoSuchElementException();
+                }
+
+                @Override
+                public void remove() {
+                    throw new UnsupportedOperationException("remove");
+                }
+    };
+
+    protected EmptyHttpHeaders() {
+    }
 
     @Override
-    public HttpHeaders add(CharSequence name, Object value) {
+    public HttpHeaders add(CharSequence name, CharSequence value) {
         super.add(name, value);
         return this;
     }
 
     @Override
-    public HttpHeaders add(CharSequence name, Iterable<?> values) {
+    public HttpHeaders add(CharSequence name, Iterable<? extends CharSequence> values) {
         super.add(name, values);
         return this;
     }
 
     @Override
-    public HttpHeaders add(CharSequence name, Object... values) {
+    public HttpHeaders add(CharSequence name, CharSequence... values) {
         super.add(name, values);
         return this;
     }
 
     @Override
-    public HttpHeaders add(TextHeaders headers) {
+    public HttpHeaders addObject(CharSequence name, Object value) {
+        super.addObject(name, value);
+        return this;
+    }
+
+    @Override
+    public HttpHeaders addObject(CharSequence name, Iterable<?> values) {
+        super.addObject(name, values);
+        return this;
+    }
+
+    @Override
+    public HttpHeaders addObject(CharSequence name, Object... values) {
+        super.addObject(name, values);
+        return this;
+    }
+
+    @Override
+    public HttpHeaders addBoolean(CharSequence name, boolean value) {
+        super.addBoolean(name, value);
+        return this;
+    }
+
+    @Override
+    public HttpHeaders addChar(CharSequence name, char value) {
+        super.addChar(name, value);
+        return this;
+    }
+
+    @Override
+    public HttpHeaders addByte(CharSequence name, byte value) {
+        super.addByte(name, value);
+        return this;
+    }
+
+    @Override
+    public HttpHeaders addShort(CharSequence name, short value) {
+        super.addShort(name, value);
+        return this;
+    }
+
+    @Override
+    public HttpHeaders addInt(CharSequence name, int value) {
+        super.addInt(name, value);
+        return this;
+    }
+
+    @Override
+    public HttpHeaders addLong(CharSequence name, long value) {
+        super.addLong(name, value);
+        return this;
+    }
+
+    @Override
+    public HttpHeaders addFloat(CharSequence name, float value) {
+        super.addFloat(name, value);
+        return this;
+    }
+
+    @Override
+    public HttpHeaders addDouble(CharSequence name, double value) {
+        super.addDouble(name, value);
+        return this;
+    }
+
+    @Override
+    public HttpHeaders addTimeMillis(CharSequence name, long value) {
+        super.addTimeMillis(name, value);
+        return this;
+    }
+
+    @Override
+    public HttpHeaders add(Headers<? extends CharSequence> headers) {
         super.add(headers);
         return this;
     }
 
     @Override
-    public HttpHeaders set(CharSequence name, Object value) {
+    public HttpHeaders set(CharSequence name, CharSequence value) {
         super.set(name, value);
         return this;
     }
 
     @Override
-    public HttpHeaders set(CharSequence name, Object... values) {
+    public HttpHeaders set(CharSequence name, Iterable<? extends CharSequence> values) {
         super.set(name, values);
         return this;
     }
 
     @Override
-    public HttpHeaders set(CharSequence name, Iterable<?> values) {
+    public HttpHeaders set(CharSequence name, CharSequence... values) {
         super.set(name, values);
         return this;
     }
 
     @Override
-    public HttpHeaders set(TextHeaders headers) {
+    public HttpHeaders setObject(CharSequence name, Object value) {
+        super.setObject(name, value);
+        return this;
+    }
+
+    @Override
+    public HttpHeaders setObject(CharSequence name, Iterable<?> values) {
+        super.setObject(name, values);
+        return this;
+    }
+
+    @Override
+    public HttpHeaders setObject(CharSequence name, Object... values) {
+        super.setObject(name, values);
+        return this;
+    }
+
+    @Override
+    public HttpHeaders setBoolean(CharSequence name, boolean value) {
+        super.setBoolean(name, value);
+        return this;
+    }
+
+    @Override
+    public HttpHeaders setChar(CharSequence name, char value) {
+        super.setChar(name, value);
+        return this;
+    }
+
+    @Override
+    public HttpHeaders setByte(CharSequence name, byte value) {
+        super.setByte(name, value);
+        return this;
+    }
+
+    @Override
+    public HttpHeaders setShort(CharSequence name, short value) {
+        super.setShort(name, value);
+        return this;
+    }
+
+    @Override
+    public HttpHeaders setInt(CharSequence name, int value) {
+        super.setInt(name, value);
+        return this;
+    }
+
+    @Override
+    public HttpHeaders setLong(CharSequence name, long value) {
+        super.setLong(name, value);
+        return this;
+    }
+
+    @Override
+    public HttpHeaders setFloat(CharSequence name, float value) {
+        super.setFloat(name, value);
+        return this;
+    }
+
+    @Override
+    public HttpHeaders setDouble(CharSequence name, double value) {
+        super.setDouble(name, value);
+        return this;
+    }
+
+    @Override
+    public HttpHeaders setTimeMillis(CharSequence name, long value) {
+        super.setTimeMillis(name, value);
+        return this;
+    }
+
+    @Override
+    public HttpHeaders set(Headers<? extends CharSequence> headers) {
         super.set(headers);
+        return this;
+    }
+
+    @Override
+    public HttpHeaders setAll(Headers<? extends CharSequence> headers) {
+        super.setAll(headers);
         return this;
     }
 
@@ -81,8 +254,22 @@ public class EmptyHttpHeaders extends EmptyTextHeaders implements HttpHeaders {
     }
 
     @Override
-    public HttpHeaders forEachEntry(TextHeaderProcessor processor) {
-        super.forEachEntry(processor);
-        return this;
+    public String getAsString(CharSequence name) {
+        return null;
+    }
+
+    @Override
+    public List<String> getAllAsString(CharSequence name) {
+        return Collections.emptyList();
+    }
+
+    @Override
+    public Iterator<Entry<String, String>> iteratorAsString() {
+        return EMPTY_STRING_ITERATOR;
+    }
+
+    @Override
+    public boolean contains(CharSequence name, CharSequence value, boolean ignoreCase) {
+        return false;
     }
 }

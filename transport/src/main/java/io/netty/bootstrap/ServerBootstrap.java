@@ -27,7 +27,6 @@ import io.netty.channel.ChannelOption;
 import io.netty.channel.ChannelPipeline;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.ServerChannel;
-import io.netty.channel.socket.SocketChannel;
 import io.netty.util.AttributeKey;
 import io.netty.util.internal.StringUtil;
 import io.netty.util.internal.logging.InternalLogger;
@@ -42,7 +41,7 @@ import java.util.concurrent.TimeUnit;
  * {@link Bootstrap} sub-class which allows easy bootstrap of {@link ServerChannel}
  *
  */
-public final class ServerBootstrap extends AbstractBootstrap<ServerBootstrap, ServerChannel> {
+public class ServerBootstrap extends AbstractBootstrap<ServerBootstrap, ServerChannel> {
 
     private static final InternalLogger logger = InternalLoggerFactory.getInstance(ServerBootstrap.class);
 
@@ -75,7 +74,7 @@ public final class ServerBootstrap extends AbstractBootstrap<ServerBootstrap, Se
 
     /**
      * Set the {@link EventLoopGroup} for the parent (acceptor) and the child (client). These
-     * {@link EventLoopGroup}'s are used to handle all the events and IO for {@link SocketChannel} and
+     * {@link EventLoopGroup}'s are used to handle all the events and IO for {@link ServerChannel} and
      * {@link Channel}'s.
      */
     public ServerBootstrap group(EventLoopGroup parentGroup, EventLoopGroup childGroup) {
@@ -163,9 +162,6 @@ public final class ServerBootstrap extends AbstractBootstrap<ServerBootstrap, Se
         }
 
         ChannelPipeline p = channel.pipeline();
-        if (handler() != null) {
-            p.addLast(handler());
-        }
 
         final EventLoopGroup currentChildGroup = childGroup;
         final ChannelHandler currentChildHandler = childHandler;
@@ -181,7 +177,12 @@ public final class ServerBootstrap extends AbstractBootstrap<ServerBootstrap, Se
         p.addLast(new ChannelInitializer<Channel>() {
             @Override
             public void initChannel(Channel ch) throws Exception {
-                ch.pipeline().addLast(new ServerBootstrapAcceptor(
+                ChannelPipeline pipeline = ch.pipeline();
+                ChannelHandler handler = handler();
+                if (handler != null) {
+                    pipeline.addLast(handler);
+                }
+                pipeline.addLast(new ServerBootstrapAcceptor(
                         currentChildGroup, currentChildHandler, currentChildOptions, currentChildAttrs));
             }
         });

@@ -58,4 +58,10 @@ public final class SslHandshakeCompletionEvent {
     public Throwable cause() {
         return cause;
     }
+
+    @Override
+    public String toString() {
+        final Throwable cause = cause();
+        return cause == null? "SslHandshakeCompletionEvent(SUCCESS)" : "SslHandshakeCompletionEvent(" + cause + ')';
+    }
 }

@@ -240,7 +240,7 @@ import java.util.List;
  * public class FirstDecoder extends {@link ReplayingDecoder}&lt;{@link Void}&gt; {
  *
  *     {@code @Override}
- *     protected Object decode({@link ChannelHandlerContext} ctx,
+ *     protected void decode({@link ChannelHandlerContext} ctx,
  *                             {@link ByteBuf} buf, List&lt;Object&gt; out) {
  *         ...
  *         // Decode the first message
@@ -269,7 +269,7 @@ public abstract class ReplayingDecoder<S> extends ByteToMessageDecoder {
 
     static final Signal REPLAY = Signal.valueOf(ReplayingDecoder.class, "REPLAY");
 
-    private final ReplayingDecoderBuffer replayable = new ReplayingDecoderBuffer();
+    private final ReplayingDecoderByteBuf replayable = new ReplayingDecoderByteBuf();
     private S state;
     private int checkpoint = -1;
 

@@ -15,6 +15,7 @@
  */
 package io.netty.buffer;
 
+import io.netty.util.ByteProcessor;
 import io.netty.util.ReferenceCounted;
 
 import java.io.IOException;
@@ -87,7 +88,7 @@ import java.nio.charset.UnsupportedCharsetException;
  * <pre>
  * // Iterates the readable bytes of a buffer.
  * {@link ByteBuf} buffer = ...;
- * while (buffer.readable()) {
+ * while (buffer.isReadable()) {
  *     System.out.println(buffer.readByte());
  * }
  * </pre>
@@ -178,7 +179,7 @@ import java.nio.charset.UnsupportedCharsetException;
  *
  * For simple single-byte searches, use {@link #indexOf(int, int, byte)} and {@link #bytesBefore(int, int, byte)}.
  * {@link #bytesBefore(byte)} is especially useful when you deal with a {@code NUL}-terminated string.
- * For complicated searches, use {@link #forEachByte(int, int, ByteBufProcessor)} with a {@link ByteBufProcessor}
+ * For complicated searches, use {@link #forEachByte(int, int, ByteProcessor)} with a {@link ByteProcessor}
  * implementation.
  *
  * <h3>Mark and reset</h3>
@@ -200,6 +201,9 @@ import java.nio.charset.UnsupportedCharsetException;
  * <p>
  * In case a completely fresh copy of an existing buffer is required, please
  * call {@link #copy()} method instead.
+ * <p>
+ * Also be aware that obtaining derived buffers will NOT call {@link #retain()} and so the
+ * reference count will NOT be increased.
  *
  * <h3>Conversion to existing JDK types</h3>
  *
@@ -1190,6 +1194,9 @@ public abstract class ByteBuf implements ReferenceCounted, Comparable<ByteBuf> {
      * Returns a new slice of this buffer's sub-region starting at the current
      * {@code readerIndex} and increases the {@code readerIndex} by the size
      * of the new slice (= {@code length}).
+     * <p>
+     * Also be aware that this method will NOT call {@link #retain()} and so the
+     * reference count will NOT be increased.
      *
      * @param length the size of the new slice
      *
@@ -1605,26 +1612,26 @@ public abstract class ByteBuf implements ReferenceCounted, Comparable<ByteBuf> {
      * Iterates over the readable bytes of this buffer with the specified {@code processor} in ascending order.
      *
      * @return {@code -1} if the processor iterated to or beyond the end of the readable bytes.
-     *         The last-visited index If the {@link ByteBufProcessor#process(byte)} returned {@code false}.
+     *         The last-visited index If the {@link ByteProcessor#process(byte)} returned {@code false}.
      */
-    public abstract int forEachByte(ByteBufProcessor processor);
+    public abstract int forEachByte(ByteProcessor processor);
 
     /**
      * Iterates over the specified area of this buffer with the specified {@code processor} in ascending order.
      * (i.e. {@code index}, {@code (index + 1)},  .. {@code (index + length - 1)})
      *
      * @return {@code -1} if the processor iterated to or beyond the end of the specified area.
-     *         The last-visited index If the {@link ByteBufProcessor#process(byte)} returned {@code false}.
+     *         The last-visited index If the {@link ByteProcessor#process(byte)} returned {@code false}.
      */
-    public abstract int forEachByte(int index, int length, ByteBufProcessor processor);
+    public abstract int forEachByte(int index, int length, ByteProcessor processor);
 
     /**
      * Iterates over the readable bytes of this buffer with the specified {@code processor} in descending order.
      *
      * @return {@code -1} if the processor iterated to or beyond the beginning of the readable bytes.
-     *         The last-visited index If the {@link ByteBufProcessor#process(byte)} returned {@code false}.
+     *         The last-visited index If the {@link ByteProcessor#process(byte)} returned {@code false}.
      */
-    public abstract int forEachByteDesc(ByteBufProcessor processor);
+    public abstract int forEachByteDesc(ByteProcessor processor);
 
     /**
      * Iterates over the specified area of this buffer with the specified {@code processor} in descending order.
@@ -1632,9 +1639,9 @@ public abstract class ByteBuf implements ReferenceCounted, Comparable<ByteBuf> {
      *
      *
      * @return {@code -1} if the processor iterated to or beyond the beginning of the specified area.
-     *         The last-visited index If the {@link ByteBufProcessor#process(byte)} returned {@code false}.
+     *         The last-visited index If the {@link ByteProcessor#process(byte)} returned {@code false}.
      */
-    public abstract int forEachByteDesc(int index, int length, ByteBufProcessor processor);
+    public abstract int forEachByteDesc(int index, int length, ByteProcessor processor);
 
     /**
      * Returns a copy of this buffer's readable bytes.  Modifying the content
@@ -1660,6 +1667,9 @@ public abstract class ByteBuf implements ReferenceCounted, Comparable<ByteBuf> {
      * identical to {@code buf.slice(buf.readerIndex(), buf.readableBytes())}.
      * This method does not modify {@code readerIndex} or {@code writerIndex} of
      * this buffer.
+     * <p>
+     * Also be aware that this method will NOT call {@link #retain()} and so the
+     * reference count will NOT be increased.
      */
     public abstract ByteBuf slice();
 
@@ -1669,6 +1679,9 @@ public abstract class ByteBuf implements ReferenceCounted, Comparable<ByteBuf> {
      * they maintain separate indexes and marks.
      * This method does not modify {@code readerIndex} or {@code writerIndex} of
      * this buffer.
+     * <p>
+     * Also be aware that this method will NOT call {@link #retain()} and so the
+     * reference count will NOT be increased.
      */
     public abstract ByteBuf slice(int index, int length);
 
@@ -1679,6 +1692,9 @@ public abstract class ByteBuf implements ReferenceCounted, Comparable<ByteBuf> {
      * This method is identical to {@code buf.slice(0, buf.capacity())}.
      * This method does not modify {@code readerIndex} or {@code writerIndex} of
      * this buffer.
+     * <p>
+     * The reader and writer marks will not be duplicated. Also be aware that this method will
+     * NOT call {@link #retain()} and so the reference count will NOT be increased.
      */
     public abstract ByteBuf duplicate();
 

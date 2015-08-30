@@ -24,6 +24,8 @@ import io.netty.channel.socket.SocketChannel;
 import io.netty.util.AttributeMap;
 import io.netty.util.concurrent.FutureListener;
 
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.RejectedExecutionException;
 import java.net.ConnectException;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
@@ -84,7 +86,7 @@ public interface Channel extends AttributeMap, Comparable<Channel> {
     ChannelId id();
 
     /**
-     * Return the {@link EventLoop} this {@link Channel} was registered too.
+     * Return the {@link EventLoop} this {@link Channel} was registered to.
      */
     EventLoop eventLoop();
 
@@ -102,7 +104,7 @@ public interface Channel extends AttributeMap, Comparable<Channel> {
     ChannelConfig config();
 
     /**
-     * Returns {@code true} if the {@link Channel} is open an may get active later
+     * Returns {@code true} if the {@link Channel} is open and may get active later
      */
     boolean isOpen();
 
@@ -163,12 +165,24 @@ public interface Channel extends AttributeMap, Comparable<Channel> {
     boolean isWritable();
 
     /**
+     * Get how many bytes can be written until {@link #isWritable()} returns {@code false}.
+     * This quantity will always be non-negative. If {@link #isWritable()} is {@code false} then 0.
+     */
+    long bytesBeforeUnwritable();
+
+    /**
+     * Get how many bytes must be drained from underlying buffers until {@link #isWritable()} returns {@code true}.
+     * This quantity will always be non-negative. If {@link #isWritable()} is {@code true} then 0.
+     */
+    long bytesBeforeWritable();
+
+    /**
      * Returns an <em>internal-use-only</em> object that provides unsafe operations.
      */
     Unsafe unsafe();
 
     /**
-     * Return the assigned {@link ChannelPipeline}
+     * Return the assigned {@link ChannelPipeline}.
      */
     ChannelPipeline pipeline();
 
@@ -183,7 +197,7 @@ public interface Channel extends AttributeMap, Comparable<Channel> {
     ChannelPromise newPromise();
 
     /**
-     * Return an new {@link ChannelProgressivePromise}
+     * Return an new {@link ChannelProgressivePromise}.
      */
     ChannelProgressivePromise newProgressivePromise();
 
@@ -281,7 +295,7 @@ public interface Channel extends AttributeMap, Comparable<Channel> {
     ChannelFuture close();
 
     /**
-     * Request to deregister this {@link Channel} from the previous assigned {@link EventLoop} and notify the
+     * Request to deregister this {@link Channel} from its assigned {@link EventLoop} and notify the
      * {@link ChannelFuture} once the operation completes, either because the operation was successful or because of
      * an error.
      * <p>
@@ -289,7 +303,19 @@ public interface Channel extends AttributeMap, Comparable<Channel> {
      * {@link ChannelHandler#deregister(ChannelHandlerContext, ChannelPromise)}
      * method called of the next {@link ChannelHandler} contained in the  {@link ChannelPipeline} of the
      * {@link Channel}.
-     *
+     * <p>
+     * After this method completes (not the {@link ChannelFuture}!) one can not submit new tasks to the
+     * {@link Channel}'s {@link EventLoop} until the {@link Channel} is again registered with an {@link EventLoop}.
+     * Any attempt to do so will result in a {@link RejectedExecutionException} being thrown.
+     * Any tasks that were submitted before the call to {@link #deregister()} will finish before the
+     * {@link ChannelFuture} completes. Furthermore, periodic and delayed tasks will not be executed until the
+     * {@link Channel} is registered with an {@link EventLoop} again. Theses are tasks submitted
+     * to the {@link EventLoop} via one of the methods declared by {@link ScheduledExecutorService}.
+     * Please note that all of the above only applies to tasks created from within the deregistered {@link Channel}'s
+     * {@link ChannelHandler}s.
+     * <p>
+     * It's only safe to {@linkplain EventLoop#register(Channel)} the {@link Channel} with another (or the same)
+     * {@link EventLoop} after the {@link ChannelFuture} has completed.
      */
     ChannelFuture deregister();
 
@@ -367,16 +393,27 @@ public interface Channel extends AttributeMap, Comparable<Channel> {
     ChannelFuture close(ChannelPromise promise);
 
     /**
-     * Request to deregister this {@link Channel} from the previous assigned {@link EventLoop} and notify the
-     * {@link ChannelFuture} once the operation completes, either because the operation was successful or because of
+     * Request to deregister this {@link Channel} from its assigned {@link EventLoop} and notify the
+     * {@link ChannelPromise} once the operation completes, either because the operation was successful or because of
      * an error.
-     *
-     * The given {@link ChannelPromise} will be notified.
      * <p>
      * This will result in having the
      * {@link ChannelHandler#deregister(ChannelHandlerContext, ChannelPromise)}
      * method called of the next {@link ChannelHandler} contained in the  {@link ChannelPipeline} of the
      * {@link Channel}.
+     * <p>
+     * After this method completes (not the {@link ChannelPromise}!) one can not submit new tasks to the
+     * {@link Channel}'s {@link EventLoop} until the {@link Channel} is again registered with an {@link EventLoop}.
+     * Any attempt to do so will result in a {@link RejectedExecutionException} being thrown.
+     * Any tasks that were submitted before the call to {@link #deregister()} will finish before the
+     * {@link ChannelPromise} completes. Furthermore, periodic and delayed tasks will not be executed until the
+     * {@link Channel} is registered with an {@link EventLoop} again. Theses are tasks submitted
+     * to the {@link EventLoop} via one of the methods declared by {@link ScheduledExecutorService}.
+     * Please note that all of the above only applies to tasks created from within the deregistered {@link Channel}'s
+     * {@link ChannelHandler}s.
+     * <p>
+     * It's only safe to {@linkplain EventLoop#register(Channel)} the {@link Channel} with another (or the same)
+     * {@link EventLoop} after the {@link ChannelPromise} has completed.
      */
     ChannelFuture deregister(ChannelPromise promise);
 
@@ -440,6 +477,12 @@ public interface Channel extends AttributeMap, Comparable<Channel> {
     interface Unsafe {
 
         /**
+         * Return the assigned {@link RecvByteBufAllocator.Handle} which will be used to allocate {@link ByteBuf}'s when
+         * receiving data.
+         */
+        RecvByteBufAllocator.Handle recvBufAllocHandle();
+
+        /**
          * Returns the {@link ChannelHandlerInvoker} which is used by default unless specified by a user.
          */
         ChannelHandlerInvoker invoker();
@@ -459,6 +502,11 @@ public interface Channel extends AttributeMap, Comparable<Channel> {
         /**
          * Register the {@link Channel} of the {@link ChannelPromise} and notify
          * the {@link ChannelFuture} once the registration was complete.
+         * <p>
+         * It's only safe to submit a new task to the {@link EventLoop} from within a
+         * {@link ChannelHandler} once the {@link ChannelPromise} succeeded. Otherwise
+         * the task may or may not be rejected.
+         * </p>
          */
         void register(EventLoop eventLoop, ChannelPromise promise);
 

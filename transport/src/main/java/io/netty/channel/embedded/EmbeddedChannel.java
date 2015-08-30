@@ -22,6 +22,7 @@ import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelHandlerAdapter;
 import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelInitializer;
 import io.netty.channel.ChannelMetadata;
 import io.netty.channel.ChannelOutboundBuffer;
 import io.netty.channel.ChannelPipeline;
@@ -56,8 +57,9 @@ public class EmbeddedChannel extends AbstractChannel {
 
     private final EmbeddedEventLoop loop = new EmbeddedEventLoop();
     private final ChannelConfig config = new DefaultChannelConfig(this);
-    private final Queue<Object> inboundMessages = new ArrayDeque<Object>();
-    private final Queue<Object> outboundMessages = new ArrayDeque<Object>();
+
+    private Queue<Object> inboundMessages;
+    private Queue<Object> outboundMessages;
     private Throwable lastException;
     private State state;
 
@@ -73,7 +75,7 @@ public class EmbeddedChannel extends AbstractChannel {
      *
      * @param handlers the @link ChannelHandler}s which will be add in the {@link ChannelPipeline}
      */
-    public EmbeddedChannel(ChannelHandler... handlers) {
+    public EmbeddedChannel(final ChannelHandler... handlers) {
         super(null, EmbeddedChannelId.INSTANCE);
 
         if (handlers == null) {
@@ -81,15 +83,22 @@ public class EmbeddedChannel extends AbstractChannel {
         }
 
         ChannelPipeline p = pipeline();
-        for (ChannelHandler h: handlers) {
-            if (h == null) {
-                break;
+        p.addLast(new ChannelInitializer<Channel>() {
+            @Override
+            protected void initChannel(Channel ch) throws Exception {
+                ChannelPipeline pipeline = ch.pipeline();
+                for (ChannelHandler h: handlers) {
+                    if (h == null) {
+                        break;
+                    }
+                    pipeline.addLast(h);
+                }
             }
-            p.addLast(h);
-        }
+        });
 
+        ChannelFuture future = loop.register(this);
+        assert future.isDone();
         p.addLast(new LastInboundHandler());
-        loop.register(this);
     }
 
     @Override
@@ -116,6 +125,9 @@ public class EmbeddedChannel extends AbstractChannel {
      * Returns the {@link Queue} which holds all the {@link Object}s that were received by this {@link Channel}.
      */
     public Queue<Object> inboundMessages() {
+        if (inboundMessages == null) {
+            inboundMessages = new ArrayDeque<Object>();
+        }
         return inboundMessages;
     }
 
@@ -131,6 +143,9 @@ public class EmbeddedChannel extends AbstractChannel {
      * Returns the {@link Queue} which holds all the {@link Object}s that were written by this {@link Channel}.
      */
     public Queue<Object> outboundMessages() {
+        if (outboundMessages == null) {
+            outboundMessages = new ArrayDeque<Object>();
+        }
         return outboundMessages;
     }
 
@@ -147,7 +162,7 @@ public class EmbeddedChannel extends AbstractChannel {
      */
     @SuppressWarnings("unchecked")
     public <T> T readInbound() {
-        return (T) inboundMessages.poll();
+        return (T) poll(inboundMessages);
     }
 
     /**
@@ -155,7 +170,7 @@ public class EmbeddedChannel extends AbstractChannel {
      */
     @SuppressWarnings("unchecked")
     public <T> T readOutbound() {
-        return (T) outboundMessages.poll();
+        return (T) poll(outboundMessages);
     }
 
     /**
@@ -168,7 +183,7 @@ public class EmbeddedChannel extends AbstractChannel {
     public boolean writeInbound(Object... msgs) {
         ensureOpen();
         if (msgs.length == 0) {
-            return !inboundMessages.isEmpty();
+            return isNotEmpty(inboundMessages);
         }
 
         ChannelPipeline p = pipeline();
@@ -178,7 +193,7 @@ public class EmbeddedChannel extends AbstractChannel {
         p.fireChannelReadComplete();
         runPendingTasks();
         checkException();
-        return !inboundMessages.isEmpty();
+        return isNotEmpty(inboundMessages);
     }
 
     /**
@@ -190,7 +205,7 @@ public class EmbeddedChannel extends AbstractChannel {
     public boolean writeOutbound(Object... msgs) {
         ensureOpen();
         if (msgs.length == 0) {
-            return !outboundMessages.isEmpty();
+            return isNotEmpty(outboundMessages);
         }
 
         RecyclableArrayList futures = RecyclableArrayList.newInstance(msgs.length);
@@ -215,7 +230,7 @@ public class EmbeddedChannel extends AbstractChannel {
 
             runPendingTasks();
             checkException();
-            return !outboundMessages.isEmpty();
+            return isNotEmpty(outboundMessages);
         } finally {
             futures.recycle();
         }
@@ -224,24 +239,57 @@ public class EmbeddedChannel extends AbstractChannel {
     /**
      * Mark this {@link Channel} as finished. Any futher try to write data to it will fail.
      *
-     *
      * @return bufferReadable returns {@code true} if any of the used buffers has something left to read
      */
     public boolean finish() {
         close();
         runPendingTasks();
+
+        // Cancel all scheduled tasks that are left.
+        loop.cancelScheduledTasks();
+
         checkException();
-        return !inboundMessages.isEmpty() || !outboundMessages.isEmpty();
+
+        return isNotEmpty(inboundMessages) || isNotEmpty(outboundMessages);
+    }
+
+    private static boolean isNotEmpty(Queue<Object> queue) {
+        return queue != null && !queue.isEmpty();
+    }
+
+    private static Object poll(Queue<Object> queue) {
+        return queue != null ? queue.poll() : null;
     }
 
     /**
-     * Run all tasks that are pending in the {@link EventLoop} for this {@link Channel}
+     * Run all tasks (which also includes scheduled tasks) that are pending in the {@link EventLoop}
+     * for this {@link Channel}
      */
     public void runPendingTasks() {
         try {
             loop.runTasks();
         } catch (Exception e) {
             recordException(e);
+        }
+
+        try {
+            loop.runScheduledTasks();
+        } catch (Exception e) {
+            recordException(e);
+        }
+    }
+
+    /**
+     * Run all pending scheduled tasks in the {@link EventLoop} for this {@link Channel} and return the
+     * {@code nanoseconds} when the next scheduled task is ready to run. If no other task was scheduled it will return
+     * {@code -1}.
+     */
+    public long runScheduledPendingTasks() {
+        try {
+            return loop.runScheduledTasks();
+        } catch (Exception e) {
+            recordException(e);
+            return loop.nextScheduledTask();
         }
     }
 
@@ -333,7 +381,7 @@ public class EmbeddedChannel extends AbstractChannel {
             }
 
             ReferenceCountUtil.retain(msg);
-            outboundMessages.add(msg);
+            outboundMessages().add(msg);
             in.remove();
         }
     }
@@ -348,7 +396,7 @@ public class EmbeddedChannel extends AbstractChannel {
     private final class LastInboundHandler extends ChannelHandlerAdapter {
         @Override
         public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
-            inboundMessages.add(msg);
+            inboundMessages().add(msg);
         }
 
         @Override

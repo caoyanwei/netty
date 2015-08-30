@@ -21,10 +21,10 @@ package io.netty.util.internal;
 import java.io.IOException;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
-import java.lang.reflect.Array;
-import java.util.Arrays;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Iterator;
+import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.Queue;
 
@@ -32,22 +32,19 @@ import java.util.Queue;
  * A lock-free concurrent single-consumer multi-producer {@link Queue}.
  * It allows multiple producer threads to perform the following operations simultaneously:
  * <ul>
- * <li>{@link #offer(Object)}, {@link #add(Object)}, and {@link #addAll(Collection)}</li>
- * <li>All other read-only operations:
- *     <ul>
- *     <li>{@link #contains(Object)} and {@link #containsAll(Collection)}</li>
- *     <li>{@link #element()}, {@link #peek()}</li>
- *     <li>{@link #size()} and {@link #isEmpty()}</li>
- *     <li>{@link #iterator()} (except {@link Iterator#remove()}</li>
- *     <li>{@link #toArray()} and {@link #toArray(Object[])}</li>
- *     </ul>
- * </li>
+ *     <li>{@link #offer(Object)}, {@link #add(Object)}, {@link #addAll(Collection)}</li>
+ *     <li>{@link #isEmpty()}</li>
  * </ul>
  * .. while only one consumer thread is allowed to perform the following operations exclusively:
  * <ul>
- * <li>{@link #poll()} and {@link #remove()}</li>
- * <li>{@link #remove(Object)}, {@link #removeAll(Collection)}, and {@link #retainAll(Collection)}</li>
- * <li>{@link #clear()}</li> {@link #}
+ *     <li>{@link #poll()} and {@link #remove()}</li>
+ *     <li>{@link #element()}, {@link #peek()}</li>
+ *     <li>{@link #remove(Object)}, {@link #removeAll(Collection)}, and {@link #retainAll(Collection)}</li>
+ *     <li>{@link #clear()}</li> {@link #}
+ *     <li>{@link #iterator()}</li>
+ *     <li>{@link #toArray()} and {@link #toArray(Object[])}</li>
+ *     <li>{@link #contains(Object)} and {@link #containsAll(Collection)}</li>
+ *     <li>{@link #size()}</li>
  * </ul>
  *
  * <strong>The behavior of this implementation is undefined if you perform the operations for a consumer thread only
@@ -55,12 +52,12 @@ import java.util.Queue;
  *
  * The initial implementation is based on:
  * <ul>
- *   <li><a href="http://goo.gl/sZE3ie">Non-intrusive MPSC node based queue</a> from 1024cores.net</li>
- *   <li><a href="http://goo.gl/O0spmV">AbstractNodeQueue</a> from Akka</li>
+ *   <li><a href="http://netty.io/s/mpsc-1024c">Non-intrusive MPSC node based queue</a> from 1024cores.net</li>
+ *   <li><a href="http://netty.io/s/mpsc-akka">AbstractNodeQueue</a> from Akka</li>
  * </ul>
  * and adopted padded head node changes from:
  * <ul>
- * <li><a href="http://goo.gl/bD5ZUV">MpscPaddedQueue</a> from RxJava</li>
+ * <li><a href="http://netty.io/s/mpsc-rxjava">MpscPaddedQueue</a> from RxJava</li>
  * </ul>
  * data structure modified to avoid false sharing between head and tail Ref as per implementation of MpscLinkedQueue
  * on <a href="https://github.com/JCTools/JCTools">JCTools project</a>.
@@ -97,21 +94,18 @@ final class MpscLinkedQueue<E> extends MpscLinkedQueueTailRef<E> implements Queu
      * Returns the node right next to the head, which contains the first element of this queue.
      */
     private MpscLinkedQueueNode<E> peekNode() {
-        for (;;) {
-            final MpscLinkedQueueNode<E> head = headRef();
-            final MpscLinkedQueueNode<E> next = head.next();
-            if (next != null) {
-                return next;
-            }
-            if (head == tailRef()) {
-                return null;
-            }
-
-            // If we are here, it means:
-            // * offer() is adding the first element, and
-            // * it's between replaceTail(newTail) and oldTail.setNext(newTail).
-            //   (i.e. next == oldTail and oldTail.next == null and head == oldTail != newTail)
+        MpscLinkedQueueNode<E> head = headRef();
+        MpscLinkedQueueNode<E> next = head.next();
+        if (next == null && head != tailRef()) {
+            // if tail != head this is not going to change until consumer makes progress
+            // we can avoid reading the head and just spin on next until it shows up
+            //
+            // See https://github.com/akka/akka/pull/15596
+            do {
+                next = head.next();
+            } while (next == null);
         }
+        return next;
     }
 
     @Override
@@ -167,19 +161,27 @@ final class MpscLinkedQueue<E> extends MpscLinkedQueueTailRef<E> implements Queu
     public int size() {
         int count = 0;
         MpscLinkedQueueNode<E> n = peekNode();
-        for (;;) {
-            if (n == null) {
+         for (;;) {
+            // If value == null it means that clearMaybe() was called on the MpscLinkedQueueNode.
+            if (n == null || n.value() == null) {
                 break;
             }
-            count ++;
-            n = n.next();
+            MpscLinkedQueueNode<E> next = n.next();
+            if (n == next) {
+                break;
+            }
+            n = next;
+            if (++ count == Integer.MAX_VALUE) {
+                // Guard against overflow of integer.
+                break;
+            }
         }
         return count;
     }
 
     @Override
     public boolean isEmpty() {
-        return peekNode() == null;
+        return headRef() == tailRef();
     }
 
     @Override
@@ -189,40 +191,26 @@ final class MpscLinkedQueue<E> extends MpscLinkedQueueTailRef<E> implements Queu
             if (n == null) {
                 break;
             }
-            if (n.value() == o) {
+            E value = n.value();
+            // If value == null it means that clearMaybe() was called on the MpscLinkedQueueNode.
+            if (value == null) {
+                return false;
+            }
+            if (value == o) {
                 return true;
             }
-            n = n.next();
+            MpscLinkedQueueNode<E> next = n.next();
+            if (n == next) {
+                break;
+            }
+            n = next;
         }
         return false;
     }
 
     @Override
     public Iterator<E> iterator() {
-        return new Iterator<E>() {
-            private MpscLinkedQueueNode<E> node = peekNode();
-
-            @Override
-            public boolean hasNext() {
-                return node != null;
-            }
-
-            @Override
-            public E next() {
-                MpscLinkedQueueNode<E> node = this.node;
-                if (node == null) {
-                    throw new NoSuchElementException();
-                }
-                E value = node.value();
-                this.node = node.next();
-                return value;
-            }
-
-            @Override
-            public void remove() {
-                throw new UnsupportedOperationException();
-            }
-        };
+        return new ReadOnlyIterator<E>(toList().iterator());
     }
 
     @Override
@@ -251,53 +239,46 @@ final class MpscLinkedQueue<E> extends MpscLinkedQueueTailRef<E> implements Queu
         throw new NoSuchElementException();
     }
 
+    private List<E> toList(int initialCapacity) {
+        return toList(new ArrayList<E>(initialCapacity));
+    }
+
+    private List<E> toList() {
+        return toList(new ArrayList<E>());
+    }
+
+    private List<E> toList(List<E> elements) {
+        MpscLinkedQueueNode<E> n = peekNode();
+        for (;;) {
+            if (n == null) {
+                break;
+            }
+            E value = n.value();
+            if (value == null) {
+                break;
+            }
+            if (!elements.add(value)) {
+                // Seems like there is no space left, break here.
+                break;
+            }
+            MpscLinkedQueueNode<E> next = n.next();
+            if (n == next) {
+                break;
+            }
+            n = next;
+        }
+        return elements;
+    }
+
     @Override
     public Object[] toArray() {
-        final Object[] array = new Object[size()];
-        final Iterator<E> it = iterator();
-        for (int i = 0; i < array.length; i ++) {
-            if (it.hasNext()) {
-                array[i] = it.next();
-            } else {
-                return Arrays.copyOf(array, i);
-            }
-        }
-        return array;
+        return toList().toArray();
     }
 
     @Override
     @SuppressWarnings("unchecked")
     public <T> T[] toArray(T[] a) {
-        final int size = size();
-        final T[] array;
-        if (a.length >= size) {
-            array = a;
-        } else {
-            array = (T[]) Array.newInstance(a.getClass().getComponentType(), size);
-        }
-
-        final Iterator<E> it = iterator();
-        for (int i = 0; i < array.length; i++) {
-            if (it.hasNext()) {
-                array[i] = (T) it.next();
-            } else {
-                if (a == array) {
-                    array[i] = null;
-                    return array;
-                }
-
-                if (a.length < i) {
-                    return Arrays.copyOf(array, i);
-                }
-
-                System.arraycopy(array, 0, a, 0, i);
-                if (a.length > i) {
-                    a[i] = null;
-                }
-                return a;
-            }
-        }
-        return array;
+        return toList(a.length).toArray(a);
     }
 
     @Override

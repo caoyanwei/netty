@@ -22,12 +22,17 @@ import io.netty.util.AttributeKey;
 import io.netty.util.ReferenceCountUtil;
 import io.netty.util.ResourceLeakHint;
 import io.netty.util.concurrent.EventExecutor;
+import io.netty.util.concurrent.FastThreadLocal;
+import io.netty.util.concurrent.PausableEventExecutor;
 import io.netty.util.internal.PlatformDependent;
 import io.netty.util.internal.StringUtil;
-
 import java.net.SocketAddress;
 import java.util.WeakHashMap;
+import java.util.concurrent.atomic.AtomicReferenceFieldUpdater;
 
+/**
+ * Abstract base class for {@link ChannelHandlerContext} implementations.
+ */
 abstract class AbstractChannelHandlerContext implements ChannelHandlerContext, ResourceLeakHint {
 
     // This class keeps an integer member field 'skipFlags' whose each bit tells if the corresponding handler method
@@ -76,17 +81,28 @@ abstract class AbstractChannelHandlerContext implements ChannelHandlerContext, R
             MASK_FLUSH;
 
     /**
-     * Cache the result of the costly generation of {@link #skipFlags} in the partitioned synchronized
-     * {@link WeakHashMap}.
+     * Cache the result of the costly generation of {@link #skipFlags} in a thread-local {@link WeakHashMap}.
      */
-    @SuppressWarnings("unchecked")
-    private static final WeakHashMap<Class<?>, Integer>[] skipFlagsCache =
-            new WeakHashMap[Runtime.getRuntime().availableProcessors()];
+    private static final FastThreadLocal<WeakHashMap<Class<?>, Integer>> skipFlagsCache =
+            new FastThreadLocal<WeakHashMap<Class<?>, Integer>>() {
+                @Override
+                protected WeakHashMap<Class<?>, Integer> initialValue() throws Exception {
+                    return new WeakHashMap<Class<?>, Integer>();
+                }
+            };
+
+    private static final AtomicReferenceFieldUpdater<AbstractChannelHandlerContext, PausableChannelEventExecutor>
+            WRAPPED_EVENTEXECUTOR_UPDATER;
 
     static {
-        for (int i = 0; i < skipFlagsCache.length; i ++) {
-            skipFlagsCache[i] = new WeakHashMap<Class<?>, Integer>();
+        AtomicReferenceFieldUpdater<AbstractChannelHandlerContext, PausableChannelEventExecutor> updater =
+               PlatformDependent.newAtomicReferenceFieldUpdater(
+                       AbstractChannelHandlerContext.class, "wrappedEventLoop");
+        if (updater == null) {
+            updater = AtomicReferenceFieldUpdater.newUpdater(
+                    AbstractChannelHandlerContext.class, PausableChannelEventExecutor.class, "wrappedEventLoop");
         }
+        WRAPPED_EVENTEXECUTOR_UPDATER = updater;
     }
 
     /**
@@ -95,18 +111,15 @@ abstract class AbstractChannelHandlerContext implements ChannelHandlerContext, R
      * Otherwise, it delegates to {@link #skipFlags0(Class)} to get it.
      */
     static int skipFlags(ChannelHandler handler) {
-        WeakHashMap<Class<?>, Integer> cache =
-                skipFlagsCache[(int) (Thread.currentThread().getId() % skipFlagsCache.length)];
+        WeakHashMap<Class<?>, Integer> cache = skipFlagsCache.get();
         Class<? extends ChannelHandler> handlerType = handler.getClass();
         int flagsVal;
-        synchronized (cache) {
-            Integer flags = cache.get(handlerType);
-            if (flags != null) {
-                flagsVal = flags;
-            } else {
-                flagsVal = skipFlags0(handlerType);
-                cache.put(handlerType, Integer.valueOf(flagsVal));
-            }
+        Integer flags = cache.get(handlerType);
+        if (flags != null) {
+            flagsVal = flags;
+        } else {
+            flagsVal = skipFlags0(handlerType);
+            cache.put(handlerType, Integer.valueOf(flagsVal));
         }
 
         return flagsVal;
@@ -217,6 +230,12 @@ abstract class AbstractChannelHandlerContext implements ChannelHandlerContext, R
     volatile Runnable invokeFlushTask;
     volatile Runnable invokeChannelWritableStateChangedTask;
 
+    /**
+     * Wrapped {@link EventLoop} and {@link ChannelHandlerInvoker} to support {@link Channel#deregister()}.
+     */
+    @SuppressWarnings("UnusedDeclaration")
+    private volatile PausableChannelEventExecutor wrappedEventLoop;
+
     AbstractChannelHandlerContext(
             DefaultChannelPipeline pipeline, ChannelHandlerInvoker invoker, String name, int skipFlags) {
 
@@ -231,33 +250,8 @@ abstract class AbstractChannelHandlerContext implements ChannelHandlerContext, R
         this.skipFlags = skipFlags;
     }
 
-    /** Invocation initiated by {@link DefaultChannelPipeline#teardownAll()}}. */
-    void teardown() {
-        EventExecutor executor = executor();
-        if (executor.inEventLoop()) {
-            teardown0();
-        } else {
-            executor.execute(new Runnable() {
-                @Override
-                public void run() {
-                    teardown0();
-                }
-            });
-        }
-    }
-
-    private void teardown0() {
-        AbstractChannelHandlerContext prev = this.prev;
-        if (prev != null) {
-            synchronized (pipeline) {
-                pipeline.remove0(this);
-            }
-            prev.teardown();
-        }
-    }
-
     @Override
-    public Channel channel() {
+    public final Channel channel() {
         return channel;
     }
 
@@ -272,16 +266,33 @@ abstract class AbstractChannelHandlerContext implements ChannelHandlerContext, R
     }
 
     @Override
-    public EventExecutor executor() {
-        return invoker().executor();
+    public final EventExecutor executor() {
+        if (invoker == null) {
+            return channel().eventLoop();
+        } else {
+            return wrappedEventLoop();
+        }
     }
 
     @Override
-    public ChannelHandlerInvoker invoker() {
+    public final ChannelHandlerInvoker invoker() {
         if (invoker == null) {
-            return channel.unsafe().invoker();
+            return channel().eventLoop().asInvoker();
+        } else {
+            return wrappedEventLoop();
         }
-        return invoker;
+    }
+
+    private PausableChannelEventExecutor wrappedEventLoop() {
+        PausableChannelEventExecutor wrapped = wrappedEventLoop;
+        if (wrapped == null) {
+            wrapped = new PausableChannelEventExecutor0();
+            if (!WRAPPED_EVENTEXECUTOR_UPDATER.compareAndSet(this, null, wrapped)) {
+                // Set in the meantime so we need to issue another volatile read
+                return wrappedEventLoop;
+            }
+        }
+        return wrapped;
     }
 
     @Override
@@ -542,5 +553,46 @@ abstract class AbstractChannelHandlerContext implements ChannelHandlerContext, R
     @Override
     public String toString() {
         return StringUtil.simpleClassName(ChannelHandlerContext.class) + '(' + name + ", " + channel + ')';
+    }
+
+    private final class PausableChannelEventExecutor0 extends PausableChannelEventExecutor {
+
+        @Override
+        public void rejectNewTasks() {
+            /**
+             * This cast is correct because {@link #channel()} always returns an {@link AbstractChannel} and
+             * {@link AbstractChannel#eventLoop()} always returns a {@link PausableChannelEventExecutor}.
+             */
+            ((PausableEventExecutor) channel().eventLoop()).rejectNewTasks();
+        }
+
+        @Override
+        public void acceptNewTasks() {
+            ((PausableEventExecutor) channel().eventLoop()).acceptNewTasks();
+        }
+
+        @Override
+        public boolean isAcceptingNewTasks() {
+            return ((PausableEventExecutor) channel().eventLoop()).isAcceptingNewTasks();
+        }
+
+        @Override
+        public Channel channel() {
+            return AbstractChannelHandlerContext.this.channel();
+        }
+
+        @Override
+        public EventExecutor unwrap() {
+            return unwrapInvoker().executor();
+        }
+
+        @Override
+        public ChannelHandlerInvoker unwrapInvoker() {
+            /**
+             * {@link #invoker} can not be {@code null}, because {@link PausableChannelEventExecutor0} will only be
+             * instantiated if {@link #invoker} is not {@code null}.
+             */
+            return invoker;
+        }
     }
 }

@@ -17,16 +17,36 @@
 package io.netty.handler.ssl;
 
 import io.netty.buffer.ByteBufAllocator;
+import io.netty.util.internal.EmptyArrays;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
 
+import javax.crypto.NoSuchPaddingException;
+import javax.net.ssl.KeyManagerFactory;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLEngine;
 import javax.net.ssl.SSLSessionContext;
+import java.io.File;
+import java.io.IOException;
+import java.security.InvalidAlgorithmParameterException;
+import java.security.KeyException;
+import java.security.KeyStore;
+import java.security.KeyStoreException;
+import java.security.NoSuchAlgorithmException;
+import java.security.PrivateKey;
+import java.security.Security;
+import java.security.UnrecoverableKeyException;
+import java.security.cert.CertificateException;
+import java.security.cert.X509Certificate;
+import java.security.spec.InvalidKeySpecException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
+
+import static io.netty.util.internal.ObjectUtil.*;
 
 /**
  * An {@link SslContext} which uses JDK's SSL/TLS implementation.
@@ -38,9 +58,11 @@ public abstract class JdkSslContext extends SslContext {
     static final String PROTOCOL = "TLS";
     static final String[] PROTOCOLS;
     static final List<String> DEFAULT_CIPHERS;
+    static final Set<String> SUPPORTED_CIPHERS;
 
     static {
         SSLContext context;
+        int i;
         try {
             context = SSLContext.getInstance(PROTOCOL);
             context.init(null, null, null);
@@ -51,11 +73,15 @@ public abstract class JdkSslContext extends SslContext {
         SSLEngine engine = context.createSSLEngine();
 
         // Choose the sensible default list of protocols.
-        String[] supportedProtocols = engine.getSupportedProtocols();
+        final String[] supportedProtocols = engine.getSupportedProtocols();
+        Set<String> supportedProtocolsSet = new HashSet<String>(supportedProtocols.length);
+        for (i = 0; i < supportedProtocols.length; ++i) {
+            supportedProtocolsSet.add(supportedProtocols[i]);
+        }
         List<String> protocols = new ArrayList<String>();
         addIfSupported(
-                supportedProtocols, protocols,
-                "TLSv1.2", "TLSv1.1", "TLSv1", "SSLv3");
+                supportedProtocolsSet, protocols,
+                "TLSv1.2", "TLSv1.1", "TLSv1");
 
         if (!protocols.isEmpty()) {
             PROTOCOLS = protocols.toArray(new String[protocols.size()]);
@@ -64,32 +90,37 @@ public abstract class JdkSslContext extends SslContext {
         }
 
         // Choose the sensible default list of cipher suites.
-        String[] supportedCiphers = engine.getSupportedCipherSuites();
+        final String[] supportedCiphers = engine.getSupportedCipherSuites();
+        SUPPORTED_CIPHERS = new HashSet<String>(supportedCiphers.length);
+        for (i = 0; i < supportedCiphers.length; ++i) {
+            SUPPORTED_CIPHERS.add(supportedCiphers[i]);
+        }
         List<String> ciphers = new ArrayList<String>();
         addIfSupported(
-                supportedCiphers, ciphers,
+                SUPPORTED_CIPHERS, ciphers,
                 // XXX: Make sure to sync this list with OpenSslEngineFactory.
                 // GCM (Galois/Counter Mode) requires JDK 8.
                 "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
-                "TLS_ECDHE_RSA_WITH_RC4_128_SHA",
                 "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA",
                 // AES256 requires JCE unlimited strength jurisdiction policy files.
                 "TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA",
                 // GCM (Galois/Counter Mode) requires JDK 8.
                 "TLS_RSA_WITH_AES_128_GCM_SHA256",
-                "SSL_RSA_WITH_RC4_128_SHA",
-                "SSL_RSA_WITH_RC4_128_MD5",
                 "TLS_RSA_WITH_AES_128_CBC_SHA",
                 // AES256 requires JCE unlimited strength jurisdiction policy files.
                 "TLS_RSA_WITH_AES_256_CBC_SHA",
-                "SSL_RSA_WITH_DES_CBC_SHA");
+                "SSL_RSA_WITH_3DES_EDE_CBC_SHA");
 
-        if (!ciphers.isEmpty()) {
-            DEFAULT_CIPHERS = Collections.unmodifiableList(ciphers);
-        } else {
+        if (ciphers.isEmpty()) {
             // Use the default from JDK as fallback.
-            DEFAULT_CIPHERS = Collections.unmodifiableList(Arrays.asList(engine.getEnabledCipherSuites()));
+            for (String cipher : engine.getEnabledCipherSuites()) {
+                if (cipher.contains("_RC4_")) {
+                    continue;
+                }
+                ciphers.add(cipher);
+            }
         }
+        DEFAULT_CIPHERS = Collections.unmodifiableList(ciphers);
 
         if (logger.isDebugEnabled()) {
             logger.debug("Default protocols (JDK): {} ", Arrays.asList(PROTOCOLS));
@@ -97,22 +128,27 @@ public abstract class JdkSslContext extends SslContext {
         }
     }
 
-    private static void addIfSupported(String[] supported, List<String> enabled, String... names) {
+    private static void addIfSupported(Set<String> supported, List<String> enabled, String... names) {
         for (String n: names) {
-            for (String s: supported) {
-                if (n.equals(s)) {
-                    enabled.add(s);
-                    break;
-                }
+            if (supported.contains(n)) {
+                enabled.add(n);
             }
         }
     }
 
     private final String[] cipherSuites;
     private final List<String> unmodifiableCipherSuites;
+    private final JdkApplicationProtocolNegotiator apn;
 
-    JdkSslContext(Iterable<String> ciphers) {
-        cipherSuites = toCipherSuiteArray(ciphers);
+    JdkSslContext(Iterable<String> ciphers, CipherSuiteFilter cipherFilter, ApplicationProtocolConfig config,
+            boolean isServer) {
+        this(ciphers, cipherFilter, toNegotiator(config, isServer));
+    }
+
+    JdkSslContext(Iterable<String> ciphers, CipherSuiteFilter cipherFilter, JdkApplicationProtocolNegotiator apn) {
+        this.apn = checkNotNull(apn, "apn");
+        cipherSuites = checkNotNull(cipherFilter, "cipherFilter").filterCipherSuites(
+                ciphers, DEFAULT_CIPHERS, SUPPORTED_CIPHERS);
         unmodifiableCipherSuites = Collections.unmodifiableList(Arrays.asList(cipherSuites));
     }
 
@@ -124,6 +160,7 @@ public abstract class JdkSslContext extends SslContext {
     /**
      * Returns the JDK {@link SSLSessionContext} object held by this context.
      */
+    @Override
     public final SSLSessionContext sessionContext() {
         if (isServer()) {
             return context().getServerSessionContext();
@@ -166,25 +203,149 @@ public abstract class JdkSslContext extends SslContext {
     }
 
     private SSLEngine wrapEngine(SSLEngine engine) {
-        if (nextProtocols().isEmpty()) {
-            return engine;
-        } else {
-            return new JettyNpnSslEngine(engine, nextProtocols(), isServer());
+        return apn.wrapperFactory().wrapSslEngine(engine, apn, isServer());
+    }
+
+    @Override
+    public JdkApplicationProtocolNegotiator applicationProtocolNegotiator() {
+        return apn;
+    }
+
+    /**
+     * Translate a {@link ApplicationProtocolConfig} object to a {@link JdkApplicationProtocolNegotiator} object.
+     * @param config The configuration which defines the translation
+     * @param isServer {@code true} if a server {@code false} otherwise.
+     * @return The results of the translation
+     */
+    static JdkApplicationProtocolNegotiator toNegotiator(ApplicationProtocolConfig config, boolean isServer) {
+        if (config == null) {
+            return JdkDefaultApplicationProtocolNegotiator.INSTANCE;
+        }
+
+        switch(config.protocol()) {
+        case NONE:
+            return JdkDefaultApplicationProtocolNegotiator.INSTANCE;
+        case ALPN:
+            if (isServer) {
+                switch(config.selectorFailureBehavior()) {
+                case FATAL_ALERT:
+                    return new JdkAlpnApplicationProtocolNegotiator(true, config.supportedProtocols());
+                case NO_ADVERTISE:
+                    return new JdkAlpnApplicationProtocolNegotiator(false, config.supportedProtocols());
+                default:
+                    throw new UnsupportedOperationException(new StringBuilder("JDK provider does not support ")
+                    .append(config.selectorFailureBehavior()).append(" failure behavior").toString());
+                }
+            } else {
+                switch(config.selectedListenerFailureBehavior()) {
+                case ACCEPT:
+                    return new JdkAlpnApplicationProtocolNegotiator(false, config.supportedProtocols());
+                case FATAL_ALERT:
+                    return new JdkAlpnApplicationProtocolNegotiator(true, config.supportedProtocols());
+                default:
+                    throw new UnsupportedOperationException(new StringBuilder("JDK provider does not support ")
+                    .append(config.selectedListenerFailureBehavior()).append(" failure behavior").toString());
+                }
+            }
+        case NPN:
+            if (isServer) {
+                switch(config.selectedListenerFailureBehavior()) {
+                case ACCEPT:
+                    return new JdkNpnApplicationProtocolNegotiator(false, config.supportedProtocols());
+                case FATAL_ALERT:
+                    return new JdkNpnApplicationProtocolNegotiator(true, config.supportedProtocols());
+                default:
+                    throw new UnsupportedOperationException(new StringBuilder("JDK provider does not support ")
+                    .append(config.selectedListenerFailureBehavior()).append(" failure behavior").toString());
+                }
+            } else {
+                switch(config.selectorFailureBehavior()) {
+                case FATAL_ALERT:
+                    return new JdkNpnApplicationProtocolNegotiator(true, config.supportedProtocols());
+                case NO_ADVERTISE:
+                    return new JdkNpnApplicationProtocolNegotiator(false, config.supportedProtocols());
+                default:
+                    throw new UnsupportedOperationException(new StringBuilder("JDK provider does not support ")
+                    .append(config.selectorFailureBehavior()).append(" failure behavior").toString());
+                }
+            }
+        default:
+            throw new UnsupportedOperationException(new StringBuilder("JDK provider does not support ")
+            .append(config.protocol()).append(" protocol").toString());
         }
     }
 
-    private static String[] toCipherSuiteArray(Iterable<String> ciphers) {
-        if (ciphers == null) {
-            return DEFAULT_CIPHERS.toArray(new String[DEFAULT_CIPHERS.size()]);
-        } else {
-            List<String> newCiphers = new ArrayList<String>();
-            for (String c: ciphers) {
-                if (c == null) {
-                    break;
-                }
-                newCiphers.add(c);
-            }
-            return newCiphers.toArray(new String[newCiphers.size()]);
+    /**
+     * Build a {@link KeyManagerFactory} based upon a key file, key file password, and a certificate chain.
+     * @param certChainFile a X.509 certificate chain file in PEM format
+     * @param keyFile a PKCS#8 private key file in PEM format
+     * @param keyPassword the password of the {@code keyFile}.
+     *                    {@code null} if it's not password-protected.
+     * @param kmf The existing {@link KeyManagerFactory} that will be used if not {@code null}
+     * @return A {@link KeyManagerFactory} based upon a key file, key file password, and a certificate chain.
+     * @deprecated will be removed.
+     */
+    @Deprecated
+    protected static KeyManagerFactory buildKeyManagerFactory(File certChainFile, File keyFile, String keyPassword,
+            KeyManagerFactory kmf)
+                    throws UnrecoverableKeyException, KeyStoreException, NoSuchAlgorithmException,
+                    NoSuchPaddingException, InvalidKeySpecException, InvalidAlgorithmParameterException,
+                    CertificateException, KeyException, IOException {
+        String algorithm = Security.getProperty("ssl.KeyManagerFactory.algorithm");
+        if (algorithm == null) {
+            algorithm = "SunX509";
         }
+        return buildKeyManagerFactory(certChainFile, algorithm, keyFile, keyPassword, kmf);
+    }
+
+    static KeyManagerFactory buildKeyManagerFactory(X509Certificate[] certChain, PrivateKey key, String keyPassword,
+                                                              KeyManagerFactory kmf)
+            throws UnrecoverableKeyException, KeyStoreException, NoSuchAlgorithmException,
+                   CertificateException, IOException {
+        String algorithm = Security.getProperty("ssl.KeyManagerFactory.algorithm");
+        if (algorithm == null) {
+            algorithm = "SunX509";
+        }
+        return buildKeyManagerFactory(certChain, algorithm, key, keyPassword, kmf);
+    }
+
+    /**
+     * Build a {@link KeyManagerFactory} based upon a key algorithm, key file, key file password,
+     * and a certificate chain.
+     * @param certChainFile a X.509 certificate chain file in PEM format
+     * @param keyAlgorithm the standard name of the requested algorithm. See the Java Secure Socket Extension
+     * Reference Guide for information about standard algorithm names.
+     * @param keyFile a PKCS#8 private key file in PEM format
+     * @param keyPassword the password of the {@code keyFile}.
+     *                    {@code null} if it's not password-protected.
+     * @param kmf The existing {@link KeyManagerFactory} that will be used if not {@code null}
+     * @return A {@link KeyManagerFactory} based upon a key algorithm, key file, key file password,
+     * and a certificate chain.
+     * @deprecated will be removed.
+     */
+    @Deprecated
+    protected static KeyManagerFactory buildKeyManagerFactory(File certChainFile,
+            String keyAlgorithm, File keyFile, String keyPassword, KeyManagerFactory kmf)
+                    throws KeyStoreException, NoSuchAlgorithmException, NoSuchPaddingException,
+                    InvalidKeySpecException, InvalidAlgorithmParameterException, IOException,
+                    CertificateException, KeyException, UnrecoverableKeyException {
+        return buildKeyManagerFactory(toX509Certificates(certChainFile), keyAlgorithm,
+                                      toPrivateKey(keyFile, keyPassword), keyPassword, kmf);
+    }
+
+    static KeyManagerFactory buildKeyManagerFactory(X509Certificate[] certChainFile,
+                                                              String keyAlgorithm, PrivateKey key,
+                                                              String keyPassword, KeyManagerFactory kmf)
+            throws KeyStoreException, NoSuchAlgorithmException, IOException,
+                   CertificateException, UnrecoverableKeyException {
+        char[] keyPasswordChars = keyPassword == null ? EmptyArrays.EMPTY_CHARS : keyPassword.toCharArray();
+        KeyStore ks = buildKeyStore(certChainFile, key, keyPasswordChars);
+        // Set up key manager factory to use our key store
+        if (kmf == null) {
+            kmf = KeyManagerFactory.getInstance(keyAlgorithm);
+        }
+        kmf.init(ks, keyPasswordChars);
+
+        return kmf;
     }
 }

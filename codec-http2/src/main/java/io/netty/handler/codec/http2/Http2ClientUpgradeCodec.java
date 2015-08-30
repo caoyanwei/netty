@@ -14,22 +14,27 @@
  */
 package io.netty.handler.codec.http2;
 
+import static io.netty.handler.codec.base64.Base64Dialect.URL_SAFE;
+import static io.netty.handler.codec.http2.Http2CodecUtil.HTTP_UPGRADE_PROTOCOL_NAME;
+import static io.netty.handler.codec.http2.Http2CodecUtil.HTTP_UPGRADE_SETTINGS_HEADER;
+import static io.netty.handler.codec.http2.Http2CodecUtil.SETTING_ENTRY_LENGTH;
+import static io.netty.handler.codec.http2.Http2CodecUtil.writeUnsignedInt;
+import static io.netty.handler.codec.http2.Http2CodecUtil.writeUnsignedShort;
+import static io.netty.util.CharsetUtil.UTF_8;
+import static io.netty.util.ReferenceCountUtil.release;
+import static io.netty.util.internal.ObjectUtil.checkNotNull;
+
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.handler.codec.base64.Base64;
 import io.netty.handler.codec.http.FullHttpResponse;
 import io.netty.handler.codec.http.HttpClientUpgradeHandler;
 import io.netty.handler.codec.http.HttpRequest;
-import io.netty.util.collection.IntObjectMap;
+import io.netty.util.collection.CharObjectMap;
 
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
-
-import static io.netty.handler.codec.base64.Base64Dialect.*;
-import static io.netty.handler.codec.http2.Http2CodecUtil.*;
-import static io.netty.util.CharsetUtil.*;
-import static io.netty.util.ReferenceCountUtil.*;
 
 /**
  * Client-side cleartext upgrade codec from HTTP to HTTP/2.
@@ -39,34 +44,28 @@ public class Http2ClientUpgradeCodec implements HttpClientUpgradeHandler.Upgrade
     private static final List<String> UPGRADE_HEADERS = Collections.singletonList(HTTP_UPGRADE_SETTINGS_HEADER);
 
     private final String handlerName;
-    private final AbstractHttp2ConnectionHandler connectionHandler;
+    private final Http2ConnectionHandler connectionHandler;
 
     /**
      * Creates the codec using a default name for the connection handler when adding to the
      * pipeline.
      *
-     * @param connectionHandler the HTTP/2 connection handler.
+     * @param connectionHandler the HTTP/2 connection handler
      */
-    public Http2ClientUpgradeCodec(AbstractHttp2ConnectionHandler connectionHandler) {
-        this("http2ConnectionHandler", connectionHandler);
+    public Http2ClientUpgradeCodec(Http2ConnectionHandler connectionHandler) {
+        this(null, connectionHandler);
     }
 
     /**
      * Creates the codec providing an upgrade to the given handler for HTTP/2.
      *
-     * @param handlerName the name of the HTTP/2 connection handler to be used in the pipeline.
-     * @param connectionHandler the HTTP/2 connection handler.
+     * @param handlerName the name of the HTTP/2 connection handler to be used in the pipeline,
+     *                    or {@code null} to auto-generate the name
+     * @param connectionHandler the HTTP/2 connection handler
      */
-    public Http2ClientUpgradeCodec(String handlerName,
-            AbstractHttp2ConnectionHandler connectionHandler) {
-        if (handlerName == null) {
-            throw new NullPointerException("handlerName");
-        }
-        if (connectionHandler == null) {
-            throw new NullPointerException("connectionHandler");
-        }
+    public Http2ClientUpgradeCodec(String handlerName, Http2ConnectionHandler connectionHandler) {
         this.handlerName = handlerName;
-        this.connectionHandler = connectionHandler;
+        this.connectionHandler = checkNotNull(connectionHandler, "connectionHandler");
     }
 
     @Override
@@ -101,12 +100,12 @@ public class Http2ClientUpgradeCodec implements HttpClientUpgradeHandler.Upgrade
         ByteBuf encodedBuf = null;
         try {
             // Get the local settings for the handler.
-            Http2Settings settings = connectionHandler.settings();
+            Http2Settings settings = connectionHandler.decoder().localSettings();
 
             // Serialize the payload of the SETTINGS frame.
             int payloadLength = SETTING_ENTRY_LENGTH * settings.size();
             buf = ctx.alloc().buffer(payloadLength);
-            for (IntObjectMap.Entry<Long> entry : settings.entries()) {
+            for (CharObjectMap.PrimitiveEntry<Long> entry : settings.entries()) {
                 writeUnsignedShort(entry.key(), buf);
                 writeUnsignedInt(entry.value(), buf);
             }

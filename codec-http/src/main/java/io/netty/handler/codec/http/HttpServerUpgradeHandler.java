@@ -20,19 +20,13 @@ import io.netty.channel.ChannelHandlerContext;
 import io.netty.util.ReferenceCountUtil;
 import io.netty.util.ReferenceCounted;
 
+import java.util.ArrayList;
 import java.util.Collection;
-import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Locale;
-import java.util.Map;
-import java.util.Set;
-import java.util.TreeSet;
 
-import static io.netty.handler.codec.http.HttpHeaders.Names.*;
-import static io.netty.handler.codec.http.HttpResponseStatus.*;
-import static io.netty.handler.codec.http.HttpVersion.*;
-import static java.lang.String.*;
+import static io.netty.handler.codec.http.HttpResponseStatus.SWITCHING_PROTOCOLS;
+import static io.netty.handler.codec.http.HttpVersion.HTTP_1_1;
+import static io.netty.util.internal.ObjectUtil.checkNotNull;
 
 /**
  * A server-side handler that receives HTTP requests and optionally performs a protocol switch if
@@ -56,14 +50,8 @@ public class HttpServerUpgradeHandler extends HttpObjectAggregator {
      */
     public interface UpgradeCodec {
         /**
-         * Returns the name of the protocol supported by this codec, as indicated by the
-         * {@link HttpHeaders.Names#UPGRADE} header.
-         */
-        String protocol();
-
-        /**
          * Gets all protocol-specific headers required by this protocol for a successful upgrade.
-         * Any supplied header will be required to appear in the {@link HttpHeaders.Names#CONNECTION} header as well.
+         * Any supplied header will be required to appear in the {@link HttpHeaderNames#CONNECTION} header as well.
          */
         Collection<String> requiredUpgradeHeaders();
 
@@ -81,11 +69,25 @@ public class HttpServerUpgradeHandler extends HttpObjectAggregator {
          * @param upgradeRequest the request that triggered the upgrade to this protocol. The
          *            upgraded protocol is responsible for sending the response.
          * @param upgradeResponse a 101 Switching Protocols response that is populated with the
-         *            {@link HttpHeaders.Names#CONNECTION} and {@link HttpHeaders.Names#UPGRADE} headers.
+         *            {@link HttpHeaderNames#CONNECTION} and {@link HttpHeaderNames#UPGRADE} headers.
          *            The protocol is required to send this before sending any other frames back to the client.
          *            The headers may be augmented as necessary by the protocol before sending.
          */
         void upgradeTo(ChannelHandlerContext ctx, FullHttpRequest upgradeRequest, FullHttpResponse upgradeResponse);
+    }
+
+    /**
+     * Creates a new {@link UpgradeCodec} for the requested protocol name.
+     */
+    public interface UpgradeCodecFactory {
+        /**
+         * Invoked by {@link HttpServerUpgradeHandler} for all the requested protocol names in the order of
+         * the client preference. The first non-{@code null} {@link UpgradeCodec} returned by this method
+         * will be selected.
+         *
+         * @return a new {@link UpgradeCodec}, or {@code null} if the specified protocol name is not supported
+         */
+        UpgradeCodec newUpgradeCodec(String protocol);
     }
 
     /**
@@ -161,33 +163,44 @@ public class HttpServerUpgradeHandler extends HttpObjectAggregator {
         }
     }
 
-    private final Map<String, UpgradeCodec> upgradeCodecMap;
+    private static final String UPGRADE_STRING = HttpHeaderNames.UPGRADE.toString();
+
     private final SourceCodec sourceCodec;
+    private final UpgradeCodecFactory upgradeCodecFactory;
     private boolean handlingUpgrade;
 
     /**
      * Constructs the upgrader with the supported codecs.
+     * <p>
+     * The handler instantiated by this constructor will reject an upgrade request with non-empty content.
+     * It should not be a concern because an upgrade request is most likely a GET request.
+     * If you have a client that sends a non-GET upgrade request, please consider using
+     * {@link #HttpServerUpgradeHandler(SourceCodec, UpgradeCodecFactory, int)} to specify the maximum
+     * length of the content of an upgrade request.
+     * </p>
      *
-     * @param sourceCodec the codec that is being used initially.
-     * @param upgradeCodecs the codecs (in order of preference) that this server supports
-     *            upgrading to from the source codec.
-     * @param maxContentLength the maximum length of the aggregated content.
+     * @param sourceCodec the codec that is being used initially
+     * @param upgradeCodecFactory the factory that creates a new upgrade codec
+     *                            for one of the requested upgrade protocols
      */
-    public HttpServerUpgradeHandler(SourceCodec sourceCodec,
-            Collection<UpgradeCodec> upgradeCodecs, int maxContentLength) {
+    public HttpServerUpgradeHandler(SourceCodec sourceCodec, UpgradeCodecFactory upgradeCodecFactory) {
+        this(sourceCodec, upgradeCodecFactory, 0);
+    }
+
+    /**
+     * Constructs the upgrader with the supported codecs.
+     *
+     * @param sourceCodec the codec that is being used initially
+     * @param upgradeCodecFactory the factory that creates a new upgrade codec
+     *                            for one of the requested upgrade protocols
+     * @param maxContentLength the maximum length of the content of an upgrade request
+     */
+    public HttpServerUpgradeHandler(
+            SourceCodec sourceCodec, UpgradeCodecFactory upgradeCodecFactory, int maxContentLength) {
         super(maxContentLength);
-        if (sourceCodec == null) {
-            throw new NullPointerException("sourceCodec");
-        }
-        if (upgradeCodecs == null) {
-            throw new NullPointerException("upgradeCodecs");
-        }
-        this.sourceCodec = sourceCodec;
-        upgradeCodecMap = new LinkedHashMap<String, UpgradeCodec>(upgradeCodecs.size());
-        for (UpgradeCodec upgradeCodec : upgradeCodecs) {
-            String name = upgradeCodec.protocol().toUpperCase(Locale.US);
-            upgradeCodecMap.put(name, upgradeCodec);
-        }
+
+        this.sourceCodec = checkNotNull(sourceCodec, "sourceCodec");
+        this.upgradeCodecFactory = checkNotNull(upgradeCodecFactory, "upgradeCodecFactory");
     }
 
     @Override
@@ -236,11 +249,11 @@ public class HttpServerUpgradeHandler extends HttpObjectAggregator {
      * Determines whether or not the message is an HTTP upgrade request.
      */
     private static boolean isUpgradeRequest(HttpObject msg) {
-        return msg instanceof HttpRequest && ((HttpRequest) msg).headers().get(UPGRADE) != null;
+        return msg instanceof HttpRequest && ((HttpRequest) msg).headers().get(HttpHeaderNames.UPGRADE) != null;
     }
 
     /**
-     * Attempts to upgrade to the protocol(s) identified by the {@link HttpHeaders.Names#UPGRADE} header (if provided
+     * Attempts to upgrade to the protocol(s) identified by the {@link HttpHeaderNames#UPGRADE} header (if provided
      * in the request).
      *
      * @param ctx the context for this handler.
@@ -249,23 +262,35 @@ public class HttpServerUpgradeHandler extends HttpObjectAggregator {
      */
     private boolean upgrade(final ChannelHandlerContext ctx, final FullHttpRequest request) {
         // Select the best protocol based on those requested in the UPGRADE header.
-        String upgradeHeader = request.headers().get(UPGRADE);
-        final UpgradeCodec upgradeCodec = selectUpgradeCodec(upgradeHeader);
+        final ArrayList<String> requestedProtocols = splitHeader(request.headers().get(HttpHeaderNames.UPGRADE));
+        final int numRequestedProtocols = requestedProtocols.size();
+        UpgradeCodec upgradeCodec = null;
+        String upgradeProtocol = null;
+        for (int i = 0; i < numRequestedProtocols; i ++) {
+            final String p = requestedProtocols.get(i);
+            final UpgradeCodec c = upgradeCodecFactory.newUpgradeCodec(p);
+            if (c != null) {
+                upgradeProtocol = p;
+                upgradeCodec = c;
+                break;
+            }
+        }
+
         if (upgradeCodec == null) {
             // None of the requested protocols are supported, don't upgrade.
             return false;
         }
 
         // Make sure the CONNECTION header is present.
-        String connectionHeader = request.headers().get(CONNECTION);
+        CharSequence connectionHeader = request.headers().get(HttpHeaderNames.CONNECTION);
         if (connectionHeader == null) {
             return false;
         }
 
         // Make sure the CONNECTION header contains UPGRADE as well as all protocol-specific headers.
         Collection<String> requiredHeaders = upgradeCodec.requiredUpgradeHeaders();
-        Set<String> values = splitHeader(connectionHeader);
-        if (!values.contains(UPGRADE.toString()) || !values.containsAll(requiredHeaders)) {
+        List<String> values = splitHeader(connectionHeader);
+        if (!values.contains(UPGRADE_STRING) || !values.containsAll(requiredHeaders)) {
             return false;
         }
 
@@ -277,12 +302,14 @@ public class HttpServerUpgradeHandler extends HttpObjectAggregator {
         }
 
         // Create the user event to be fired once the upgrade completes.
-        final UpgradeEvent event = new UpgradeEvent(upgradeCodec.protocol(), request);
+        final UpgradeEvent event = new UpgradeEvent(upgradeProtocol, request);
 
         // Prepare and send the upgrade response. Wait for this write to complete before upgrading,
         // since we need the old codec in-place to properly encode the response.
-        final FullHttpResponse upgradeResponse = createUpgradeResponse(upgradeCodec);
+        final FullHttpResponse upgradeResponse = createUpgradeResponse(upgradeProtocol);
         upgradeCodec.prepareUpgradeResponse(ctx, request, upgradeResponse);
+
+        final UpgradeCodec finalUpgradeCodec = upgradeCodec;
         ctx.writeAndFlush(upgradeResponse).addListener(new ChannelFutureListener() {
             @Override
             public void operationComplete(ChannelFuture future) throws Exception {
@@ -290,7 +317,7 @@ public class HttpServerUpgradeHandler extends HttpObjectAggregator {
                     if (future.isSuccess()) {
                         // Perform the upgrade to the new protocol.
                         sourceCodec.upgradeFrom(ctx);
-                        upgradeCodec.upgradeTo(ctx, request, upgradeResponse);
+                        finalUpgradeCodec.upgradeTo(ctx, request, upgradeResponse);
 
                         // Notify that the upgrade has occurred. Retain the event to offset
                         // the release() in the finally block.
@@ -311,33 +338,13 @@ public class HttpServerUpgradeHandler extends HttpObjectAggregator {
     }
 
     /**
-     * Looks up the most desirable supported upgrade codec from the list of choices in the UPGRADE
-     * header. If no suitable codec was found, returns {@code null}.
-     */
-    private UpgradeCodec selectUpgradeCodec(String upgradeHeader) {
-        Set<String> requestedProtocols = splitHeader(upgradeHeader);
-
-        // Retain only the protocols that are in the protocol map. Maintain the original insertion
-        // order into the protocolMap, so that the first one in the remaining set is the most
-        // desirable protocol for the server.
-        Set<String> supportedProtocols = new LinkedHashSet<String>(upgradeCodecMap.keySet());
-        supportedProtocols.retainAll(requestedProtocols);
-
-        if (!supportedProtocols.isEmpty()) {
-            String protocol = supportedProtocols.iterator().next().toUpperCase(Locale.US);
-            return upgradeCodecMap.get(protocol);
-        }
-        return null;
-    }
-
-    /**
      * Creates the 101 Switching Protocols response message.
      */
-    private static FullHttpResponse createUpgradeResponse(UpgradeCodec upgradeCodec) {
+    private static FullHttpResponse createUpgradeResponse(String upgradeProtocol) {
         DefaultFullHttpResponse res = new DefaultFullHttpResponse(HTTP_1_1, SWITCHING_PROTOCOLS);
-        res.headers().add(CONNECTION, UPGRADE);
-        res.headers().add(UPGRADE, upgradeCodec.protocol());
-        res.headers().add(CONTENT_LENGTH, "0");
+        res.headers().add(HttpHeaderNames.CONNECTION, HttpHeaderValues.UPGRADE);
+        res.headers().add(HttpHeaderNames.UPGRADE, upgradeProtocol);
+        res.headers().add(HttpHeaderNames.CONTENT_LENGTH, "0");
         return res;
     }
 
@@ -345,9 +352,9 @@ public class HttpServerUpgradeHandler extends HttpObjectAggregator {
      * Splits a comma-separated header value. The returned set is case-insensitive and contains each
      * part with whitespace removed.
      */
-    private static Set<String> splitHeader(String header) {
-        StringBuilder builder = new StringBuilder(header.length());
-        Set<String> protocols = new TreeSet<String>(CASE_INSENSITIVE_ORDER);
+    private static ArrayList<String> splitHeader(CharSequence header) {
+        final StringBuilder builder = new StringBuilder(header.length());
+        final ArrayList<String> protocols = new ArrayList<String>(4);
         for (int i = 0; i < header.length(); ++i) {
             char c = header.charAt(i);
             if (Character.isWhitespace(c)) {

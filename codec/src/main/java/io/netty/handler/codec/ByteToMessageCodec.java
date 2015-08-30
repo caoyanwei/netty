@@ -70,6 +70,7 @@ public abstract class ByteToMessageCodec<I> extends ChannelHandlerAdapter {
      *                              {@link ByteBuf}, which is backed by an byte array.
      */
     protected ByteToMessageCodec(boolean preferDirect) {
+        CodecUtil.ensureNotSharable(this);
         outboundMsgMatcher = TypeParameterMatcher.find(this, ByteToMessageCodec.class, "I");
         encoder = new Encoder(preferDirect);
     }
@@ -83,15 +84,9 @@ public abstract class ByteToMessageCodec<I> extends ChannelHandlerAdapter {
      *                              {@link ByteBuf}, which is backed by an byte array.
      */
     protected ByteToMessageCodec(Class<? extends I> outboundMessageType, boolean preferDirect) {
-        checkForSharableAnnotation();
+        CodecUtil.ensureNotSharable(this);
         outboundMsgMatcher = TypeParameterMatcher.get(outboundMessageType);
         encoder = new Encoder(preferDirect);
-    }
-
-    private void checkForSharableAnnotation() {
-        if (isSharable()) {
-            throw new IllegalStateException("@Sharable annotation is not allowed");
-        }
     }
 
     /**
@@ -111,6 +106,34 @@ public abstract class ByteToMessageCodec<I> extends ChannelHandlerAdapter {
     @Override
     public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) throws Exception {
         encoder.write(ctx, msg, promise);
+    }
+
+    @Override
+    public void channelReadComplete(ChannelHandlerContext ctx) throws Exception {
+        decoder.channelReadComplete(ctx);
+    }
+
+    @Override
+    public void channelInactive(ChannelHandlerContext ctx) throws Exception {
+        decoder.channelInactive(ctx);
+    }
+
+    @Override
+    public void handlerAdded(ChannelHandlerContext ctx) throws Exception {
+        try {
+            decoder.handlerAdded(ctx);
+        } finally {
+            encoder.handlerAdded(ctx);
+        }
+    }
+
+    @Override
+    public void handlerRemoved(ChannelHandlerContext ctx) throws Exception {
+        try {
+            decoder.handlerRemoved(ctx);
+        } finally {
+            encoder.handlerRemoved(ctx);
+        }
     }
 
     /**

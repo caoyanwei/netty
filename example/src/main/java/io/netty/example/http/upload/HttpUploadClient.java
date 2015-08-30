@@ -21,14 +21,16 @@ import io.netty.channel.ChannelFuture;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.nio.NioSocketChannel;
-import io.netty.handler.codec.http.ClientCookieEncoder;
-import io.netty.handler.codec.http.DefaultCookie;
 import io.netty.handler.codec.http.DefaultHttpRequest;
+import io.netty.handler.codec.http.HttpHeaderNames;
+import io.netty.handler.codec.http.HttpHeaderValues;
 import io.netty.handler.codec.http.HttpHeaders;
 import io.netty.handler.codec.http.HttpMethod;
 import io.netty.handler.codec.http.HttpRequest;
 import io.netty.handler.codec.http.HttpVersion;
 import io.netty.handler.codec.http.QueryStringEncoder;
+import io.netty.handler.codec.http.cookie.ClientCookieEncoder;
+import io.netty.handler.codec.http.cookie.DefaultCookie;
 import io.netty.handler.codec.http.multipart.DefaultHttpDataFactory;
 import io.netty.handler.codec.http.multipart.DiskAttribute;
 import io.netty.handler.codec.http.multipart.DiskFileUpload;
@@ -36,12 +38,15 @@ import io.netty.handler.codec.http.multipart.HttpDataFactory;
 import io.netty.handler.codec.http.multipart.HttpPostRequestEncoder;
 import io.netty.handler.codec.http.multipart.InterfaceHttpData;
 import io.netty.handler.ssl.SslContext;
-import io.netty.handler.ssl.util.SelfSignedCertificate;
+import io.netty.handler.ssl.SslContextBuilder;
+import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
 
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.net.InetSocketAddress;
 import java.net.URI;
+import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map.Entry;
 
@@ -85,8 +90,8 @@ public final class HttpUploadClient {
         final boolean ssl = "https".equalsIgnoreCase(scheme);
         final SslContext sslCtx;
         if (ssl) {
-            SelfSignedCertificate ssc = new SelfSignedCertificate();
-            sslCtx = SslContext.newServerContext(ssc.certificate(), ssc.privateKey());
+            sslCtx = SslContextBuilder.forClient()
+                .trustManager(InsecureTrustManagerFactory.INSTANCE).build();
         } else {
             sslCtx = null;
         }
@@ -163,33 +168,37 @@ public final class HttpUploadClient {
         URI uriGet = new URI(encoder.toString());
         HttpRequest request = new DefaultHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.GET, uriGet.toASCIIString());
         HttpHeaders headers = request.headers();
-        headers.set(HttpHeaders.Names.HOST, host);
-        headers.set(HttpHeaders.Names.CONNECTION, HttpHeaders.Values.CLOSE);
-        headers.set(HttpHeaders.Names.ACCEPT_ENCODING, HttpHeaders.Values.GZIP + "," + HttpHeaders.Values.DEFLATE);
+        headers.set(HttpHeaderNames.HOST, host);
+        headers.set(HttpHeaderNames.CONNECTION, HttpHeaderValues.CLOSE);
+        headers.set(HttpHeaderNames.ACCEPT_ENCODING, HttpHeaderValues.GZIP + "," + HttpHeaderValues.DEFLATE);
 
-        headers.set(HttpHeaders.Names.ACCEPT_CHARSET, "ISO-8859-1,utf-8;q=0.7,*;q=0.7");
-        headers.set(HttpHeaders.Names.ACCEPT_LANGUAGE, "fr");
-        headers.set(HttpHeaders.Names.REFERER, uriSimple.toString());
-        headers.set(HttpHeaders.Names.USER_AGENT, "Netty Simple Http Client side");
-        headers.set(HttpHeaders.Names.ACCEPT, "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
+        headers.set(HttpHeaderNames.ACCEPT_CHARSET, "ISO-8859-1,utf-8;q=0.7,*;q=0.7");
+        headers.set(HttpHeaderNames.ACCEPT_LANGUAGE, "fr");
+        headers.set(HttpHeaderNames.REFERER, uriSimple.toString());
+        headers.set(HttpHeaderNames.USER_AGENT, "Netty Simple Http Client side");
+        headers.set(HttpHeaderNames.ACCEPT, "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
 
         //connection will not close but needed
         // headers.set("Connection","keep-alive");
-        // headers.set("Keep-Alive","300");
 
         headers.set(
-                HttpHeaders.Names.COOKIE, ClientCookieEncoder.encode(
+                HttpHeaderNames.COOKIE, ClientCookieEncoder.STRICT.encode(
                         new DefaultCookie("my-cookie", "foo"),
                         new DefaultCookie("another-cookie", "bar"))
         );
 
         // send request
-        List<Entry<String, String>> entries = headers.entries();
         channel.writeAndFlush(request);
 
         // Wait for the server to close the connection.
         channel.closeFuture().sync();
 
+        // convert headers to list
+        List<Entry<String, String>> entries = new ArrayList<Entry<String, String>>(headers.size());
+        Iterator<Entry<String, String>> iterConverted = headers.iteratorAsString();
+        while (iterConverted.hasNext()) {
+            entries.add(iterConverted.next());
+        }
         return entries;
     }
 
@@ -240,8 +249,9 @@ public final class HttpUploadClient {
         // test if request was chunked and if so, finish the write
         if (bodyRequestEncoder.isChunked()) { // could do either request.isChunked()
             // either do it through ChunkedWriteHandler
-            channel.write(bodyRequestEncoder).sync();
+            channel.write(bodyRequestEncoder);
         }
+        channel.flush();
 
         // Do not clear here since we will reuse the InterfaceHttpData on the next request
         // for the example (limit action on client side). Take this as a broadcast of the same
@@ -260,7 +270,7 @@ public final class HttpUploadClient {
      */
     private static void formpostmultipart(
             Bootstrap bootstrap, String host, int port, URI uriFile, HttpDataFactory factory,
-            List<Entry<String, String>> headers, List<InterfaceHttpData> bodylist) throws Exception {
+            Iterable<Entry<String, String>> headers, List<InterfaceHttpData> bodylist) throws Exception {
         // XXX /formpostmultipart
         // Start the connection attempt.
         ChannelFuture future = bootstrap.connect(new InetSocketAddress(host, port));
@@ -290,8 +300,9 @@ public final class HttpUploadClient {
 
         // test if request was chunked and if so, finish the write
         if (bodyRequestEncoder.isChunked()) {
-            channel.write(bodyRequestEncoder).sync();
+            channel.write(bodyRequestEncoder);
         }
+        channel.flush();
 
         // Now no more use of file representation (and list of HttpData)
         bodyRequestEncoder.cleanFiles();

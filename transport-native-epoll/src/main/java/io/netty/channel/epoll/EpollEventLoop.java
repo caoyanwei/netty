@@ -33,7 +33,8 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
 
 /**
- * {@link EventLoop} which uses epoll under the covers. Only works on Linux!
+ * A {@link SingleThreadEventLoop} implementation which uses <a href="http://en.wikipedia.org/wiki/Epoll">epoll</a>
+ * under the covers. This {@link EventLoop} works only on Linux systems!
  */
 final class EpollEventLoop extends SingleThreadEventLoop {
     private static final InternalLogger logger = InternalLoggerFactory.getInstance(EpollEventLoop.class);
@@ -50,26 +51,33 @@ final class EpollEventLoop extends SingleThreadEventLoop {
 
     private final int epollFd;
     private final int eventFd;
-    private final IntObjectMap<AbstractEpollChannel> ids = new IntObjectHashMap<AbstractEpollChannel>();
-    private final long[] events;
+    private final IntObjectMap<AbstractEpollChannel> channels = new IntObjectHashMap<AbstractEpollChannel>(4096);
+    private final boolean allowGrowing;
+    private final EpollEventArray events;
 
-    private int id;
-    private boolean overflown;
-
-    @SuppressWarnings("unused")
     private volatile int wakenUp;
     private volatile int ioRatio = 50;
 
     EpollEventLoop(EventLoopGroup parent, Executor executor, int maxEvents) {
         super(parent, executor, false);
-        events = new long[maxEvents];
+        if (maxEvents == 0) {
+            allowGrowing = true;
+            events = new EpollEventArray(4096);
+        } else {
+            allowGrowing = false;
+            events = new EpollEventArray(maxEvents);
+        }
         boolean success = false;
         int epollFd = -1;
         int eventFd = -1;
         try {
             this.epollFd = epollFd = Native.epollCreate();
             this.eventFd = eventFd = Native.eventFd();
-            Native.epollCtlAdd(epollFd, eventFd, Native.EPOLLIN, 0);
+            try {
+                Native.epollCtlAdd(epollFd, eventFd, Native.EPOLLIN);
+            } catch (IOException e) {
+                throw new IllegalStateException("Unable to add eventFd filedescriptor to epoll", e);
+            }
             success = true;
         } finally {
             if (!success) {
@@ -91,27 +99,6 @@ final class EpollEventLoop extends SingleThreadEventLoop {
         }
     }
 
-    private int nextId() {
-        int id = this.id;
-        if (id == Integer.MAX_VALUE) {
-            overflown = true;
-            id = 0;
-        }
-        if (overflown) {
-            // the ids had an overflow before so we need to make sure the id is not in use atm before assign
-            // it.
-            for (;;) {
-                if (!ids.containsKey(++id)) {
-                    this.id = id;
-                    break;
-                }
-            }
-        } else {
-            this.id = ++id;
-        }
-        return id;
-    }
-
     @Override
     protected void wakeup(boolean inEventLoop) {
         if (!inEventLoop && WAKEN_UP_UPDATER.compareAndSet(this, 0, 1)) {
@@ -123,31 +110,34 @@ final class EpollEventLoop extends SingleThreadEventLoop {
     /**
      * Register the given epoll with this {@link io.netty.channel.EventLoop}.
      */
-    void add(AbstractEpollChannel ch) {
+    void add(AbstractEpollChannel ch) throws IOException {
         assert inEventLoop();
-        int id = nextId();
-        Native.epollCtlAdd(epollFd, ch.fd, ch.flags, id);
-        ch.id = id;
-        ids.put(id, ch);
+        int fd = ch.fd().intValue();
+        Native.epollCtlAdd(epollFd, fd, ch.flags);
+        channels.put(fd, ch);
     }
 
     /**
      * The flags of the given epoll was modified so update the registration
      */
-    void modify(AbstractEpollChannel ch) {
+    void modify(AbstractEpollChannel ch) throws IOException {
         assert inEventLoop();
-        Native.epollCtlMod(epollFd, ch.fd, ch.flags, ch.id);
+        Native.epollCtlMod(epollFd, ch.fd().intValue(), ch.flags);
     }
 
     /**
-     * Deregister the given epoll from this {@link io.netty.channel.EventLoop}.
+     * Deregister the given epoll from this {@link EventLoop}.
      */
-    void remove(AbstractEpollChannel ch) {
+    void remove(AbstractEpollChannel ch) throws IOException {
         assert inEventLoop();
-        if (ids.remove(ch.id) != null && ch.isOpen()) {
-            // Remove the epoll. This is only needed if it's still open as otherwise it will be automatically
-            // removed once the file-descriptor is closed.
-            Native.epollCtlDel(epollFd, ch.fd);
+
+        if (ch.isOpen()) {
+            int fd = ch.fd().intValue();
+            if (channels.remove(fd) != null) {
+                // Remove the epoll. This is only needed if it's still open as otherwise it will be automatically
+                // removed once the file-descriptor is closed.
+                Native.epollCtlDel(epollFd, ch.fd().intValue());
+            }
         }
     }
 
@@ -175,7 +165,7 @@ final class EpollEventLoop extends SingleThreadEventLoop {
         this.ioRatio = ioRatio;
     }
 
-    private int epollWait(boolean oldWakenUp) {
+    private int epollWait(boolean oldWakenUp) throws IOException {
         int selectCnt = 0;
         long currentTimeNanos = System.nanoTime();
         long selectDeadLineNanos = currentTimeNanos + delayNanos(currentTimeNanos);
@@ -208,125 +198,163 @@ final class EpollEventLoop extends SingleThreadEventLoop {
 
     @Override
     protected void run() {
-        for (;;) {
-            boolean oldWakenUp = WAKEN_UP_UPDATER.getAndSet(this, 0) == 1;
-            try {
-                int ready;
-                if (hasTasks()) {
-                    // Non blocking just return what is ready directly without block
-                    ready = Native.epollWait(epollFd, events, 0);
-                } else {
-                    ready = epollWait(oldWakenUp);
+        boolean oldWakenUp = WAKEN_UP_UPDATER.getAndSet(this, 0) == 1;
+        try {
+            int ready;
+            if (hasTasks()) {
+                // Non blocking just return what is ready directly without block
+                ready = Native.epollWait(epollFd, events, 0);
+            } else {
+                ready = epollWait(oldWakenUp);
 
-                    // 'wakenUp.compareAndSet(false, true)' is always evaluated
-                    // before calling 'selector.wakeup()' to reduce the wake-up
-                    // overhead. (Selector.wakeup() is an expensive operation.)
-                    //
-                    // However, there is a race condition in this approach.
-                    // The race condition is triggered when 'wakenUp' is set to
-                    // true too early.
-                    //
-                    // 'wakenUp' is set to true too early if:
-                    // 1) Selector is waken up between 'wakenUp.set(false)' and
-                    //    'selector.select(...)'. (BAD)
-                    // 2) Selector is waken up between 'selector.select(...)' and
-                    //    'if (wakenUp.get()) { ... }'. (OK)
-                    //
-                    // In the first case, 'wakenUp' is set to true and the
-                    // following 'selector.select(...)' will wake up immediately.
-                    // Until 'wakenUp' is set to false again in the next round,
-                    // 'wakenUp.compareAndSet(false, true)' will fail, and therefore
-                    // any attempt to wake up the Selector will fail, too, causing
-                    // the following 'selector.select(...)' call to block
-                    // unnecessarily.
-                    //
-                    // To fix this problem, we wake up the selector again if wakenUp
-                    // is true immediately after selector.select(...).
-                    // It is inefficient in that it wakes up the selector for both
-                    // the first case (BAD - wake-up required) and the second case
-                    // (OK - no wake-up required).
+                // 'wakenUp.compareAndSet(false, true)' is always evaluated
+                // before calling 'selector.wakeup()' to reduce the wake-up
+                // overhead. (Selector.wakeup() is an expensive operation.)
+                //
+                // However, there is a race condition in this approach.
+                // The race condition is triggered when 'wakenUp' is set to
+                // true too early.
+                //
+                // 'wakenUp' is set to true too early if:
+                // 1) Selector is waken up between 'wakenUp.set(false)' and
+                //    'selector.select(...)'. (BAD)
+                // 2) Selector is waken up between 'selector.select(...)' and
+                //    'if (wakenUp.get()) { ... }'. (OK)
+                //
+                // In the first case, 'wakenUp' is set to true and the
+                // following 'selector.select(...)' will wake up immediately.
+                // Until 'wakenUp' is set to false again in the next round,
+                // 'wakenUp.compareAndSet(false, true)' will fail, and therefore
+                // any attempt to wake up the Selector will fail, too, causing
+                // the following 'selector.select(...)' call to block
+                // unnecessarily.
+                //
+                // To fix this problem, we wake up the selector again if wakenUp
+                // is true immediately after selector.select(...).
+                // It is inefficient in that it wakes up the selector for both
+                // the first case (BAD - wake-up required) and the second case
+                // (OK - no wake-up required).
 
-                    if (wakenUp == 1) {
-                        Native.eventFdWrite(eventFd, 1L);
-                    }
-                }
-
-                final int ioRatio = this.ioRatio;
-                if (ioRatio == 100) {
-                    if (ready > 0) {
-                        processReady(events, ready);
-                    }
-                    runAllTasks();
-                } else {
-                    final long ioStartTime = System.nanoTime();
-
-                    if (ready > 0) {
-                        processReady(events, ready);
-                    }
-
-                    final long ioTime = System.nanoTime() - ioStartTime;
-                    runAllTasks(ioTime * (100 - ioRatio) / ioRatio);
-                }
-
-                if (isShuttingDown()) {
-                    closeAll();
-                    if (confirmShutdown()) {
-                        break;
-                    }
-                }
-            } catch (Throwable t) {
-                logger.warn("Unexpected exception in the selector loop.", t);
-
-                // Prevent possible consecutive immediate failures that lead to
-                // excessive CPU consumption.
-                try {
-                    Thread.sleep(1000);
-                } catch (InterruptedException e) {
-                    // Ignore.
+                if (wakenUp == 1) {
+                    Native.eventFdWrite(eventFd, 1L);
                 }
             }
+
+            final int ioRatio = this.ioRatio;
+            if (ioRatio == 100) {
+                if (ready > 0) {
+                    processReady(events, ready);
+                }
+                runAllTasks();
+            } else {
+                final long ioStartTime = System.nanoTime();
+
+                if (ready > 0) {
+                    processReady(events, ready);
+                }
+
+                final long ioTime = System.nanoTime() - ioStartTime;
+                runAllTasks(ioTime * (100 - ioRatio) / ioRatio);
+            }
+            if (allowGrowing && ready == events.length()) {
+                //increase the size of the array as we needed the whole space for the events
+                events.increase();
+            }
+            if (isShuttingDown()) {
+                closeAll();
+                if (confirmShutdown()) {
+                    cleanupAndTerminate(true);
+                    return;
+                }
+            }
+        } catch (Throwable t) {
+            logger.warn("Unexpected exception in the selector loop.", t);
+
+            // Prevent possible consecutive immediate failures that lead to
+            // excessive CPU consumption.
+            try {
+                Thread.sleep(1000);
+            } catch (InterruptedException e) {
+                // Ignore.
+            }
         }
+
+        scheduleExecution();
     }
 
     private void closeAll() {
-        Native.epollWait(epollFd, events, 0);
-        Collection<AbstractEpollChannel> channels = new ArrayList<AbstractEpollChannel>(ids.size());
+        try {
+            Native.epollWait(epollFd, events, 0);
+        } catch (IOException ignore) {
+            // ignore on close
+        }
+        Collection<AbstractEpollChannel> array = new ArrayList<AbstractEpollChannel>(channels.size());
 
-        for (IntObjectMap.Entry<AbstractEpollChannel> entry: ids.entries()) {
-            channels.add(entry.value());
+        for (AbstractEpollChannel channel: channels.values()) {
+            array.add(channel);
         }
 
-        for (AbstractEpollChannel ch: channels) {
+        for (AbstractEpollChannel ch: array) {
             ch.unsafe().close(ch.unsafe().voidPromise());
         }
     }
 
-    private void processReady(long[] events, int ready) {
+    private void processReady(EpollEventArray events, int ready) {
         for (int i = 0; i < ready; i ++) {
-            final long ev = events[i];
-
-            int id = (int) (ev >> 32L);
-            if (id == 0) {
+            final int fd = events.fd(i);
+            if (fd == eventFd) {
                 // consume wakeup event
                 Native.eventFdRead(eventFd);
             } else {
-                boolean read = (ev & Native.EPOLLIN) != 0;
-                boolean write = (ev & Native.EPOLLOUT) != 0;
-                boolean close = (ev & Native.EPOLLRDHUP) != 0;
+                final long ev = events.events(i);
 
-                AbstractEpollChannel ch = ids.get(id);
+                AbstractEpollChannel ch = channels.get(fd);
                 if (ch != null) {
+                    // Don't change the ordering of processing EPOLLOUT | EPOLLRDHUP / EPOLLIN if you're not 100%
+                    // sure about it!
+                    // Re-ordering can easily introduce bugs and bad side-effects, as we found out painfully in the
+                    // past.
                     AbstractEpollUnsafe unsafe = (AbstractEpollUnsafe) ch.unsafe();
-                    if (write && ch.isOpen()) {
-                        // force flush of data as the epoll is writable again
+
+                    // Check if an error was the cause of the wakeup.
+                    boolean err = (ev & Native.EPOLLERR) != 0;
+
+                    // First check for EPOLLOUT as we may need to fail the connect ChannelPromise before try
+                    // to read from the file descriptor.
+                    // See https://github.com/netty/netty/issues/3785
+                    //
+                    // It is possible for an EPOLLOUT or EPOLLERR to be generated when a connection is refused.
+                    // In either case epollOutReady() will do the correct thing (finish connecting, or fail
+                    // the connection).
+                    // See https://github.com/netty/netty/issues/3848
+                    if (err || ((ev & Native.EPOLLOUT) != 0) && ch.isOpen()) {
+                        // Force flush of data as the epoll is writable again
                         unsafe.epollOutReady();
                     }
-                    if (read && ch.isOpen()) {
-                        // Something is ready to read, so consume it now
+
+                    // Check if EPOLLRDHUP was set, this will notify us for connection-reset in which case
+                    // we may close the channel directly or try to read more data depending on the state of the
+                    // Channel and als depending on the AbstractEpollChannel subtype.
+                    if ((ev & Native.EPOLLRDHUP) != 0) {
+                        unsafe.epollRdHupReady();
+                    }
+
+                    // If EPOLLOUT or EPOLLING was received and the channel is still open call epollInReady().
+                    // This will try to read from the underlying filedescriptor and so notify the user about the
+                    // error.
+                    if ((err || (ev & Native.EPOLLIN) != 0) && ch.isOpen()) {
+                        // The Channel is still open and there is something to read. Do it now.
                         unsafe.epollInReady();
                     }
-                    if (close && ch.isOpen()) {
-                        unsafe.epollRdHupReady();
+                } else {
+                    // We received an event for an fd which we not use anymore. Remove it from the epoll_event set.
+                    try {
+                        Native.epollCtlDel(epollFd, fd);
+                    } catch (IOException ignore) {
+                        // This can happen but is nothing we need to worry about as we only try to delete
+                        // the fd from the epoll set as we not found it in our mappings. So this call to
+                        // epollCtlDel(...) is just to ensure we cleanup stuff and so may fail if it was
+                        // deleted before or the file descriptor was closed before.
                     }
                 }
             }
@@ -336,14 +364,19 @@ final class EpollEventLoop extends SingleThreadEventLoop {
     @Override
     protected void cleanup() {
         try {
-            Native.close(epollFd);
-        } catch (IOException e) {
-            logger.warn("Failed to close the epoll fd.", e);
-        }
-        try {
-            Native.close(eventFd);
-        } catch (IOException e) {
-            logger.warn("Failed to close the event fd.", e);
+            try {
+                Native.close(epollFd);
+            } catch (IOException e) {
+                logger.warn("Failed to close the epoll fd.", e);
+            }
+            try {
+                Native.close(eventFd);
+            } catch (IOException e) {
+                logger.warn("Failed to close the event fd.", e);
+            }
+        } finally {
+            // release native memory
+            events.free();
         }
     }
 }

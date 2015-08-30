@@ -16,65 +16,110 @@
 package io.netty.handler.codec.http2;
 
 import static io.netty.handler.codec.http2.Http2CodecUtil.DEFAULT_HEADER_TABLE_SIZE;
-import static io.netty.util.CharsetUtil.UTF_8;
+import static io.netty.handler.codec.http2.Http2Error.COMPRESSION_ERROR;
+import static io.netty.handler.codec.http2.Http2Error.INTERNAL_ERROR;
+import static io.netty.handler.codec.http2.Http2Error.PROTOCOL_ERROR;
+import static io.netty.handler.codec.http2.Http2Exception.connectionError;
+import static io.netty.util.internal.ObjectUtil.checkNotNull;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufOutputStream;
-import io.netty.buffer.Unpooled;
+import io.netty.util.ByteString;
 
+
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.util.Map.Entry;
 
 import com.twitter.hpack.Encoder;
 
-public class DefaultHttp2HeadersEncoder implements Http2HeadersEncoder {
+public class DefaultHttp2HeadersEncoder implements Http2HeadersEncoder, Http2HeadersEncoder.Configuration {
     private final Encoder encoder;
-    private final ByteBuf tableSizeChangeOutput = Unpooled.buffer();
+    private final ByteArrayOutputStream tableSizeChangeOutput = new ByteArrayOutputStream();
+    private final SensitivityDetector sensitivityDetector;
+    private final Http2HeaderTable headerTable;
 
     public DefaultHttp2HeadersEncoder() {
-        this(DEFAULT_HEADER_TABLE_SIZE);
+        this(DEFAULT_HEADER_TABLE_SIZE, NEVER_SENSITIVE);
     }
 
-    public DefaultHttp2HeadersEncoder(int maxHeaderTableSize) {
+    public DefaultHttp2HeadersEncoder(int maxHeaderTableSize, SensitivityDetector sensitivityDetector) {
+        this.sensitivityDetector = checkNotNull(sensitivityDetector, "sensitiveDetector");
         encoder = new Encoder(maxHeaderTableSize);
+        headerTable = new Http2HeaderTableEncoder();
     }
 
     @Override
     public void encodeHeaders(Http2Headers headers, ByteBuf buffer) throws Http2Exception {
+        final OutputStream stream = new ByteBufOutputStream(buffer);
         try {
+            if (headers.size() > headerTable.maxHeaderListSize()) {
+                throw connectionError(PROTOCOL_ERROR, "Number of headers (%d) exceeds maxHeaderListSize (%d)",
+                        headers.size(), headerTable.maxHeaderListSize());
+            }
+
             // If there was a change in the table size, serialize the output from the encoder
             // resulting from that change.
-            if (tableSizeChangeOutput.isReadable()) {
-                buffer.writeBytes(tableSizeChangeOutput);
-                tableSizeChangeOutput.clear();
+            if (tableSizeChangeOutput.size() > 0) {
+                buffer.writeBytes(tableSizeChangeOutput.toByteArray());
+                tableSizeChangeOutput.reset();
             }
 
-            OutputStream stream = new ByteBufOutputStream(buffer);
-            for (Entry<String, String> header : headers) {
-                byte[] key = header.getKey().getBytes(UTF_8);
-                byte[] value = header.getValue().getBytes(UTF_8);
-                encoder.encodeHeader(stream, key, value, false);
+            for (Entry<ByteString, ByteString> header : headers) {
+                encodeHeader(header.getKey(), header.getValue(), stream);
             }
-            encoder.endHeaders(stream);
-        } catch (IOException e) {
-            throw Http2Exception.format(Http2Error.COMPRESSION_ERROR,
-                    "Failed encoding headers block: %s", e.getMessage());
+        } catch (Http2Exception e) {
+            throw e;
+        } catch (Throwable t) {
+            throw connectionError(COMPRESSION_ERROR, t, "Failed encoding headers block: %s", t.getMessage());
+        } finally {
+            try {
+                stream.close();
+            } catch (IOException e) {
+                throw connectionError(INTERNAL_ERROR, e, e.getMessage());
+            }
         }
     }
 
     @Override
-    public void maxHeaderTableSize(int size) throws Http2Exception {
-        try {
-            // No headers should be emitted. If they are, we throw.
-            encoder.setMaxHeaderTableSize(new ByteBufOutputStream(tableSizeChangeOutput), size);
-        } catch (IOException e) {
-            throw new Http2Exception(Http2Error.COMPRESSION_ERROR, e.getMessage(), e);
-        }
+    public Http2HeaderTable headerTable() {
+        return headerTable;
     }
 
     @Override
-    public int maxHeaderTableSize() {
-        return encoder.getMaxHeaderTableSize();
+    public Configuration configuration() {
+        return this;
     }
 
+    private void encodeHeader(ByteString key, ByteString value, OutputStream stream) throws IOException {
+        encoder.encodeHeader(stream,
+                key.isEntireArrayUsed() ? key.array() : new ByteString(key, true).array(),
+                value.isEntireArrayUsed() ? value.array() : new ByteString(value, true).array(),
+                sensitivityDetector.isSensitive(key, value));
+    }
+
+    /**
+     * {@link Http2HeaderTable} implementation to support {@link Http2HeadersEncoder}
+     */
+    private final class Http2HeaderTableEncoder extends DefaultHttp2HeaderTableListSize implements Http2HeaderTable {
+        @Override
+        public void maxHeaderTableSize(int max) throws Http2Exception {
+            if (max < 0) {
+                throw connectionError(PROTOCOL_ERROR, "Header Table Size must be non-negative but was %d", max);
+            }
+            try {
+                // No headers should be emitted. If they are, we throw.
+                encoder.setMaxHeaderTableSize(tableSizeChangeOutput, max);
+            } catch (IOException e) {
+                throw new Http2Exception(COMPRESSION_ERROR, e.getMessage(), e);
+            } catch (Throwable t) {
+                throw new Http2Exception(PROTOCOL_ERROR, t.getMessage(), t);
+            }
+        }
+
+        @Override
+        public int maxHeaderTableSize() {
+            return encoder.getMaxHeaderTableSize();
+        }
+    }
 }

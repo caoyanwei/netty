@@ -24,7 +24,7 @@ import io.netty.channel.RecvByteBufAllocator;
 import java.io.IOException;
 import java.util.Map;
 
-import static io.netty.channel.ChannelOption.*;
+import static io.netty.channel.ChannelOption.SO_BACKLOG;
 
 /**
  * The default {@link UdtServerChannelConfig} implementation.
@@ -85,15 +85,15 @@ public class DefaultUdtServerChannelConfig extends DefaultUdtChannelConfig
 
     @Override
     public UdtServerChannelConfig setProtocolReceiveBufferSize(
-            final int protocolReceiveBuferSize) {
-        super.setProtocolReceiveBufferSize(protocolReceiveBuferSize);
+            final int protocolReceiveBufferSize) {
+        super.setProtocolReceiveBufferSize(protocolReceiveBufferSize);
         return this;
     }
 
     @Override
     public UdtServerChannelConfig setProtocolSendBufferSize(
-            final int protocolSendBuferSize) {
-        super.setProtocolSendBufferSize(protocolSendBuferSize);
+            final int protocolSendBufferSize) {
+        super.setProtocolSendBufferSize(protocolSendBufferSize);
         return this;
     }
 
@@ -124,8 +124,8 @@ public class DefaultUdtServerChannelConfig extends DefaultUdtChannelConfig
 
     @Override
     public UdtServerChannelConfig setSystemReceiveBufferSize(
-            final int systemSendBuferSize) {
-        super.setSystemReceiveBufferSize(systemSendBuferSize);
+            final int systemSendBufferSize) {
+        super.setSystemReceiveBufferSize(systemSendBufferSize);
         return this;
     }
 
@@ -143,6 +143,7 @@ public class DefaultUdtServerChannelConfig extends DefaultUdtChannelConfig
     }
 
     @Override
+    @Deprecated
     public UdtServerChannelConfig setMaxMessagesPerRead(int maxMessagesPerRead) {
         super.setMaxMessagesPerRead(maxMessagesPerRead);
         return this;

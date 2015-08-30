@@ -19,9 +19,11 @@ import io.netty.channel.Channel;
 import io.netty.channel.ChannelConfig;
 import io.netty.channel.ChannelOutboundBuffer;
 import io.netty.channel.ChannelPipeline;
+import io.netty.channel.RecvByteBufAllocator;
 import io.netty.channel.ServerChannel;
 
 import java.io.IOException;
+import java.net.PortUnreachableException;
 import java.nio.channels.SelectableChannel;
 import java.nio.channels.SelectionKey;
 import java.util.ArrayList;
@@ -58,13 +60,16 @@ public abstract class AbstractNioMessageChannel extends AbstractNioChannel {
                 return;
             }
 
-            final int maxMessagesPerRead = config.getMaxMessagesPerRead();
             final ChannelPipeline pipeline = pipeline();
+            final RecvByteBufAllocator.Handle allocHandle = unsafe().recvBufAllocHandle();
+            allocHandle.reset(config);
+
             boolean closed = false;
             Throwable exception = null;
             try {
                 try {
-                    for (;;) {
+                    boolean needReadPendingReset = true;
+                    do {
                         int localRead = doReadMessages(readBuf);
                         if (localRead == 0) {
                             break;
@@ -74,29 +79,26 @@ public abstract class AbstractNioMessageChannel extends AbstractNioChannel {
                             break;
                         }
 
-                        // stop reading and remove op
-                        if (!config.isAutoRead()) {
-                            break;
+                        allocHandle.incMessagesRead(localRead);
+                        if (needReadPendingReset) {
+                            needReadPendingReset = false;
+                            setReadPending(false);
                         }
-
-                        if (readBuf.size() >= maxMessagesPerRead) {
-                            break;
-                        }
-                    }
+                    } while (allocHandle.continueReading());
                 } catch (Throwable t) {
                     exception = t;
                 }
-                setReadPending(false);
+
                 int size = readBuf.size();
                 for (int i = 0; i < size; i ++) {
                     pipeline.fireChannelRead(readBuf.get(i));
                 }
-
                 readBuf.clear();
+                allocHandle.readComplete();
                 pipeline.fireChannelReadComplete();
 
                 if (exception != null) {
-                    if (exception instanceof IOException) {
+                    if (exception instanceof IOException && !(exception instanceof PortUnreachableException)) {
                         // ServerChannel should not be closed even on IOException because it can often continue
                         // accepting incoming connections. (e.g. too many open files)
                         closed = !(AbstractNioMessageChannel.this instanceof ServerChannel);
@@ -106,6 +108,7 @@ public abstract class AbstractNioMessageChannel extends AbstractNioChannel {
                 }
 
                 if (closed) {
+                    setInputShutdown();
                     if (isOpen()) {
                         close(voidPromise());
                     }

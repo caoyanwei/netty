@@ -16,14 +16,23 @@
 package io.netty.channel;
 
 import io.netty.buffer.ByteBufAllocator;
-import io.netty.channel.nio.AbstractNioByteChannel;
 import io.netty.channel.socket.SocketChannelConfig;
+import io.netty.util.internal.PlatformDependent;
 
 import java.util.IdentityHashMap;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
 
-import static io.netty.channel.ChannelOption.*;
+import static io.netty.channel.ChannelOption.ALLOCATOR;
+import static io.netty.channel.ChannelOption.AUTO_READ;
+import static io.netty.channel.ChannelOption.CONNECT_TIMEOUT_MILLIS;
+import static io.netty.channel.ChannelOption.MAX_MESSAGES_PER_READ;
+import static io.netty.channel.ChannelOption.MESSAGE_SIZE_ESTIMATOR;
+import static io.netty.channel.ChannelOption.RCVBUF_ALLOCATOR;
+import static io.netty.channel.ChannelOption.WRITE_BUFFER_HIGH_WATER_MARK;
+import static io.netty.channel.ChannelOption.WRITE_BUFFER_LOW_WATER_MARK;
+import static io.netty.channel.ChannelOption.WRITE_SPIN_COUNT;
 
 /**
  * The default {@link SocketChannelConfig} implementation.
@@ -35,6 +44,17 @@ public class DefaultChannelConfig implements ChannelConfig {
 
     private static final int DEFAULT_CONNECT_TIMEOUT = 30000;
 
+    private static final AtomicIntegerFieldUpdater<DefaultChannelConfig> AUTOREAD_UPDATER;
+
+    static {
+        AtomicIntegerFieldUpdater<DefaultChannelConfig> autoReadUpdater =
+            PlatformDependent.newAtomicIntegerFieldUpdater(DefaultChannelConfig.class, "autoRead");
+        if (autoReadUpdater == null) {
+            autoReadUpdater = AtomicIntegerFieldUpdater.newUpdater(DefaultChannelConfig.class, "autoRead");
+        }
+        AUTOREAD_UPDATER = autoReadUpdater;
+    }
+
     protected final Channel channel;
 
     private volatile ByteBufAllocator allocator = ByteBufAllocator.DEFAULT;
@@ -42,9 +62,8 @@ public class DefaultChannelConfig implements ChannelConfig {
     private volatile MessageSizeEstimator msgSizeEstimator = DEFAULT_MSG_SIZE_ESTIMATOR;
 
     private volatile int connectTimeoutMillis = DEFAULT_CONNECT_TIMEOUT;
-    private volatile int maxMessagesPerRead;
     private volatile int writeSpinCount = 16;
-    private volatile boolean autoRead = true;
+    private volatile int autoRead = 1;
     private volatile int writeBufferHighWaterMark = 64 * 1024;
     private volatile int writeBufferLowWaterMark = 32 * 1024;
 
@@ -53,16 +72,6 @@ public class DefaultChannelConfig implements ChannelConfig {
             throw new NullPointerException("channel");
         }
         this.channel = channel;
-
-        if (channel instanceof ServerChannel || channel instanceof AbstractNioByteChannel) {
-            // Server channels: Accept as many incoming connections as possible.
-            // NIO byte channels: Implemented to reduce unnecessary system calls even if it's > 1.
-            //                    See https://github.com/netty/netty/issues/2079
-            // TODO: Add some property to ChannelMetadata so we can remove the ugly instanceof
-            maxMessagesPerRead = 16;
-        } else {
-            maxMessagesPerRead = 1;
-        }
     }
 
     @Override
@@ -190,18 +199,41 @@ public class DefaultChannelConfig implements ChannelConfig {
         return this;
     }
 
+    /**
+     * {@inheritDoc}
+     * <p>
+     * @throws IllegalStateException if {@link #getRecvByteBufAllocator()} does not return an object of type
+     * {@link MaxMessagesRecvByteBufAllocator}.
+     */
     @Override
+    @Deprecated
     public int getMaxMessagesPerRead() {
-        return maxMessagesPerRead;
+        try {
+            MaxMessagesRecvByteBufAllocator allocator = getRecvByteBufAllocator();
+            return allocator.maxMessagesPerRead();
+        } catch (ClassCastException e) {
+            throw new IllegalStateException("getRecvByteBufAllocator() must return an object of type " +
+                    "MaxMessagesRecvByteBufAllocator", e);
+        }
     }
 
+    /**
+     * {@inheritDoc}
+     * <p>
+     * @throws IllegalStateException if {@link #getRecvByteBufAllocator()} does not return an object of type
+     * {@link MaxMessagesRecvByteBufAllocator}.
+     */
     @Override
+    @Deprecated
     public ChannelConfig setMaxMessagesPerRead(int maxMessagesPerRead) {
-        if (maxMessagesPerRead <= 0) {
-            throw new IllegalArgumentException("maxMessagesPerRead: " + maxMessagesPerRead + " (expected: > 0)");
+        try {
+            MaxMessagesRecvByteBufAllocator allocator = getRecvByteBufAllocator();
+            allocator.maxMessagesPerRead(maxMessagesPerRead);
+            return this;
+        } catch (ClassCastException e) {
+            throw new IllegalStateException("getRecvByteBufAllocator() must return an object of type " +
+                    "MaxMessagesRecvByteBufAllocator", e);
         }
-        this.maxMessagesPerRead = maxMessagesPerRead;
-        return this;
     }
 
     @Override
@@ -233,15 +265,43 @@ public class DefaultChannelConfig implements ChannelConfig {
         return this;
     }
 
+    @SuppressWarnings("unchecked")
     @Override
-    public RecvByteBufAllocator getRecvByteBufAllocator() {
-        return rcvBufAllocator;
+    public <T extends RecvByteBufAllocator> T getRecvByteBufAllocator() {
+        return (T) rcvBufAllocator;
     }
 
+    /**
+     * {@inheritDoc}
+     * <p>
+     * This method enforces the {@link ChannelMetadata#minMaxMessagesPerRead()}. If these predetermined limits
+     * are not appropriate for your use case consider extending the channel and overriding {@link Channel#metadata()},
+     * or use {@link #setRecvByteBufAllocator(RecvByteBufAllocator, ChannelMetadata)}.
+     */
     @Override
     public ChannelConfig setRecvByteBufAllocator(RecvByteBufAllocator allocator) {
+        return setRecvByteBufAllocator(allocator, channel.metadata());
+    }
+
+    /**
+     * Set the {@link RecvByteBufAllocator} which is used for the channel to allocate receive buffers.
+     * @param allocator the allocator to set.
+     * @param metadata Used to determine the {@link ChannelMetadata#minMaxMessagesPerRead()} if {@code allocator}
+     * is of type {@link MaxMessagesRecvByteBufAllocator}.
+     * @return this
+     */
+    public ChannelConfig setRecvByteBufAllocator(RecvByteBufAllocator allocator, ChannelMetadata metadata) {
         if (allocator == null) {
             throw new NullPointerException("allocator");
+        }
+        if (allocator instanceof MaxMessagesRecvByteBufAllocator) {
+            if (metadata == null) {
+                throw new NullPointerException("metadata");
+            }
+            MaxMessagesRecvByteBufAllocator maxMsgAllocator = (MaxMessagesRecvByteBufAllocator) allocator;
+            if (maxMsgAllocator.maxMessagesPerRead() < metadata.minMaxMessagesPerRead()) {
+                maxMsgAllocator.maxMessagesPerRead(metadata.minMaxMessagesPerRead());
+            }
         }
         rcvBufAllocator = allocator;
         return this;
@@ -249,13 +309,12 @@ public class DefaultChannelConfig implements ChannelConfig {
 
     @Override
     public boolean isAutoRead() {
-        return autoRead;
+        return autoRead == 1;
     }
 
     @Override
     public ChannelConfig setAutoRead(boolean autoRead) {
-        boolean oldAutoRead = this.autoRead;
-        this.autoRead = autoRead;
+        boolean oldAutoRead = AUTOREAD_UPDATER.getAndSet(this, autoRead ? 1 : 0) == 1;
         if (autoRead && !oldAutoRead) {
             channel.read();
         } else if (!autoRead && oldAutoRead) {

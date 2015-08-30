@@ -19,6 +19,7 @@ import com.sun.nio.sctp.Association;
 import com.sun.nio.sctp.MessageInfo;
 import com.sun.nio.sctp.NotificationHandler;
 import com.sun.nio.sctp.SctpChannel;
+
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelException;
@@ -34,6 +35,7 @@ import io.netty.channel.sctp.SctpMessage;
 import io.netty.channel.sctp.SctpNotificationHandler;
 import io.netty.channel.sctp.SctpServerChannel;
 import io.netty.util.internal.PlatformDependent;
+import io.netty.util.internal.StringUtil;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
 
@@ -64,6 +66,7 @@ public class OioSctpChannel extends AbstractOioMessageChannel
             InternalLoggerFactory.getInstance(OioSctpChannel.class);
 
     private static final ChannelMetadata METADATA = new ChannelMetadata(false);
+    private static final String EXPECTED_TYPE = " (expected: " + StringUtil.simpleClassName(SctpMessage.class) + ')';
 
     private final SctpChannel ch;
     private final SctpChannelConfig config;
@@ -73,8 +76,6 @@ public class OioSctpChannel extends AbstractOioMessageChannel
     private final Selector connectSelector;
 
     private final NotificationHandler<?> notificationHandler;
-
-    private RecvByteBufAllocator.Handle allocHandle;
 
     private static SctpChannel openChannel() {
         try {
@@ -182,39 +183,29 @@ public class OioSctpChannel extends AbstractOioMessageChannel
             return readMessages;
         }
 
-        Set<SelectionKey> reableKeys = readSelector.selectedKeys();
+        final RecvByteBufAllocator.Handle allocHandle = unsafe().recvBufAllocHandle();
+        ByteBuf buffer = allocHandle.allocate(config().getAllocator());
+        boolean free = true;
+
         try {
-            for (SelectionKey ignored : reableKeys) {
-                RecvByteBufAllocator.Handle allocHandle = this.allocHandle;
-                if (allocHandle == null) {
-                    this.allocHandle = allocHandle = config().getRecvByteBufAllocator().newHandle();
-                }
-                ByteBuf buffer = allocHandle.allocate(config().getAllocator());
-                boolean free = true;
-
-                try {
-                    ByteBuffer data = buffer.nioBuffer(buffer.writerIndex(), buffer.writableBytes());
-                    MessageInfo messageInfo = ch.receive(data, null, notificationHandler);
-                    if (messageInfo == null) {
-                        return readMessages;
-                    }
-
-                    data.flip();
-                    msgs.add(new SctpMessage(messageInfo, buffer.writerIndex(buffer.writerIndex() + data.remaining())));
-                    free = false;
-                    readMessages ++;
-                } catch (Throwable cause) {
-                    PlatformDependent.throwException(cause);
-                }  finally {
-                    int bytesRead = buffer.readableBytes();
-                    allocHandle.record(bytesRead);
-                    if (free) {
-                        buffer.release();
-                    }
-                }
+            ByteBuffer data = buffer.nioBuffer(buffer.writerIndex(), buffer.writableBytes());
+            MessageInfo messageInfo = ch.receive(data, null, notificationHandler);
+            if (messageInfo == null) {
+                return readMessages;
             }
-        } finally {
-            reableKeys.clear();
+
+            data.flip();
+            allocHandle.lastBytesRead(data.remaining());
+            msgs.add(new SctpMessage(messageInfo,
+                    buffer.writerIndex(buffer.writerIndex() + allocHandle.lastBytesRead())));
+            free = false;
+            ++readMessages;
+        } catch (Throwable cause) {
+            PlatformDependent.throwException(cause);
+        }  finally {
+            if (free) {
+                buffer.release();
+            }
         }
         return readMessages;
     }
@@ -261,6 +252,7 @@ public class OioSctpChannel extends AbstractOioMessageChannel
                 final MessageInfo mi = MessageInfo.createOutgoing(association(), null, packet.streamIdentifier());
                 mi.payloadProtocolID(packet.protocolIdentifier());
                 mi.streamNumber(packet.streamIdentifier());
+                mi.unordered(packet.isUnordered());
 
                 ch.send(nioData, mi);
                 written ++;
@@ -271,6 +263,16 @@ public class OioSctpChannel extends AbstractOioMessageChannel
                 }
             }
         }
+    }
+
+    @Override
+    protected Object filterOutboundMessage(Object msg) throws Exception {
+        if (msg instanceof SctpMessage) {
+            return msg;
+        }
+
+        throw new UnsupportedOperationException(
+                "unsupported message type: " + StringUtil.simpleClassName(msg) + EXPECTED_TYPE);
     }
 
     @Override

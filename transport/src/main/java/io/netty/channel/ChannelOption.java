@@ -55,11 +55,30 @@ public final class ChannelOption<T> extends AbstractConstant<ChannelOption<T>> {
         return (ChannelOption<T>) pool.valueOf(firstNameComponent, secondNameComponent);
     }
 
+    /**
+     * Returns {@code true} if a {@link ChannelOption} exists for the given {@code name}.
+     */
+    public static boolean exists(String name) {
+        return pool.exists(name);
+    }
+
+    /**
+     * Creates a new {@link ChannelOption} for the given {@param name} or fail with an
+     * {@link IllegalArgumentException} if a {@link ChannelOption} for the given {@param name} exists.
+     */
+    @SuppressWarnings("unchecked")
+    public static <T> ChannelOption<T> newInstance(String name) {
+        return (ChannelOption<T>) pool.newInstance(name);
+    }
+
     public static final ChannelOption<ByteBufAllocator> ALLOCATOR = valueOf("ALLOCATOR");
     public static final ChannelOption<RecvByteBufAllocator> RCVBUF_ALLOCATOR = valueOf("RCVBUF_ALLOCATOR");
     public static final ChannelOption<MessageSizeEstimator> MESSAGE_SIZE_ESTIMATOR = valueOf("MESSAGE_SIZE_ESTIMATOR");
 
     public static final ChannelOption<Integer> CONNECT_TIMEOUT_MILLIS = valueOf("CONNECT_TIMEOUT_MILLIS");
+    /**
+     * @deprecated Use {@link MaxMessagesRecvByteBufAllocator}
+     */
     public static final ChannelOption<Integer> MAX_MESSAGES_PER_READ = valueOf("MAX_MESSAGES_PER_READ");
     public static final ChannelOption<Integer> WRITE_SPIN_COUNT = valueOf("WRITE_SPIN_COUNT");
     public static final ChannelOption<Integer> WRITE_BUFFER_HIGH_WATER_MARK = valueOf("WRITE_BUFFER_HIGH_WATER_MARK");

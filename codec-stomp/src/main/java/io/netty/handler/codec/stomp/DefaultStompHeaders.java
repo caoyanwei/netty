@@ -16,57 +16,218 @@
 
 package io.netty.handler.codec.stomp;
 
-import io.netty.handler.codec.DefaultTextHeaders;
-import io.netty.handler.codec.TextHeaderProcessor;
-import io.netty.handler.codec.TextHeaders;
+import io.netty.handler.codec.CharSequenceValueConverter;
+import io.netty.handler.codec.DefaultHeaders;
+import io.netty.handler.codec.Headers;
+import io.netty.handler.codec.HeadersUtils;
 
-public class DefaultStompHeaders extends DefaultTextHeaders implements StompHeaders {
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map.Entry;
+
+import static io.netty.util.AsciiString.CASE_INSENSITIVE_HASHER;
+import static io.netty.util.AsciiString.CASE_SENSITIVE_HASHER;
+
+public class DefaultStompHeaders extends DefaultHeaders<CharSequence> implements StompHeaders {
+    public DefaultStompHeaders() {
+        super(CharSequenceValueConverter.INSTANCE);
+    }
 
     @Override
-    public StompHeaders add(CharSequence name, Object value) {
+    public StompHeaders add(CharSequence name, CharSequence value) {
         super.add(name, value);
         return this;
     }
 
     @Override
-    public StompHeaders add(CharSequence name, Iterable<?> values) {
+    public StompHeaders add(CharSequence name, Iterable<? extends CharSequence> values) {
         super.add(name, values);
         return this;
     }
 
     @Override
-    public StompHeaders add(CharSequence name, Object... values) {
+    public StompHeaders add(CharSequence name, CharSequence... values) {
         super.add(name, values);
         return this;
     }
 
     @Override
-    public StompHeaders add(TextHeaders headers) {
+    public StompHeaders addObject(CharSequence name, Object value) {
+        super.addObject(name, value);
+        return this;
+    }
+
+    @Override
+    public StompHeaders addObject(CharSequence name, Iterable<?> values) {
+        super.addObject(name, values);
+        return this;
+    }
+
+    @Override
+    public StompHeaders addObject(CharSequence name, Object... values) {
+        super.addObject(name, values);
+        return this;
+    }
+
+    @Override
+    public StompHeaders addBoolean(CharSequence name, boolean value) {
+        super.addBoolean(name, value);
+        return this;
+    }
+
+    @Override
+    public StompHeaders addChar(CharSequence name, char value) {
+        super.addChar(name, value);
+        return this;
+    }
+
+    @Override
+    public StompHeaders addByte(CharSequence name, byte value) {
+        super.addByte(name, value);
+        return this;
+    }
+
+    @Override
+    public StompHeaders addShort(CharSequence name, short value) {
+        super.addShort(name, value);
+        return this;
+    }
+
+    @Override
+    public StompHeaders addInt(CharSequence name, int value) {
+        super.addInt(name, value);
+        return this;
+    }
+
+    @Override
+    public StompHeaders addLong(CharSequence name, long value) {
+        super.addLong(name, value);
+        return this;
+    }
+
+    @Override
+    public StompHeaders addFloat(CharSequence name, float value) {
+        super.addFloat(name, value);
+        return this;
+    }
+
+    @Override
+    public StompHeaders addDouble(CharSequence name, double value) {
+        super.addDouble(name, value);
+        return this;
+    }
+
+    @Override
+    public StompHeaders addTimeMillis(CharSequence name, long value) {
+        super.addTimeMillis(name, value);
+        return this;
+    }
+
+    @Override
+    public StompHeaders add(Headers<? extends CharSequence> headers) {
         super.add(headers);
         return this;
     }
 
     @Override
-    public StompHeaders set(CharSequence name, Object value) {
+    public StompHeaders set(CharSequence name, CharSequence value) {
         super.set(name, value);
         return this;
     }
 
     @Override
-    public StompHeaders set(CharSequence name, Object... values) {
+    public StompHeaders set(CharSequence name, Iterable<? extends CharSequence> values) {
         super.set(name, values);
         return this;
     }
 
     @Override
-    public StompHeaders set(CharSequence name, Iterable<?> values) {
+    public StompHeaders set(CharSequence name, CharSequence... values) {
         super.set(name, values);
         return this;
     }
 
     @Override
-    public StompHeaders set(TextHeaders headers) {
+    public StompHeaders setObject(CharSequence name, Object value) {
+        super.setObject(name, value);
+        return this;
+    }
+
+    @Override
+    public StompHeaders setObject(CharSequence name, Iterable<?> values) {
+        super.setObject(name, values);
+        return this;
+    }
+
+    @Override
+    public StompHeaders setObject(CharSequence name, Object... values) {
+        super.setObject(name, values);
+        return this;
+    }
+
+    @Override
+    public StompHeaders setBoolean(CharSequence name, boolean value) {
+        super.setBoolean(name, value);
+        return this;
+    }
+
+    @Override
+    public StompHeaders setChar(CharSequence name, char value) {
+        super.setChar(name, value);
+        return this;
+    }
+
+    @Override
+    public StompHeaders setByte(CharSequence name, byte value) {
+        super.setByte(name, value);
+        return this;
+    }
+
+    @Override
+    public StompHeaders setShort(CharSequence name, short value) {
+        super.setShort(name, value);
+        return this;
+    }
+
+    @Override
+    public StompHeaders setInt(CharSequence name, int value) {
+        super.setInt(name, value);
+        return this;
+    }
+
+    @Override
+    public StompHeaders setLong(CharSequence name, long value) {
+        super.setLong(name, value);
+        return this;
+    }
+
+    @Override
+    public StompHeaders setFloat(CharSequence name, float value) {
+        super.setFloat(name, value);
+        return this;
+    }
+
+    @Override
+    public StompHeaders setDouble(CharSequence name, double value) {
+        super.setDouble(name, value);
+        return this;
+    }
+
+    @Override
+    public StompHeaders setTimeMillis(CharSequence name, long value) {
+        super.setTimeMillis(name, value);
+        return this;
+    }
+
+    @Override
+    public StompHeaders set(Headers<? extends CharSequence> headers) {
         super.set(headers);
+        return this;
+    }
+
+    @Override
+    public StompHeaders setAll(Headers<? extends CharSequence> headers) {
+        super.setAll(headers);
         return this;
     }
 
@@ -77,8 +238,28 @@ public class DefaultStompHeaders extends DefaultTextHeaders implements StompHead
     }
 
     @Override
-    public StompHeaders forEachEntry(TextHeaderProcessor processor) {
-        super.forEachEntry(processor);
-        return this;
+    public String getAsString(CharSequence name) {
+        return HeadersUtils.getAsString(this, name);
+    }
+
+    @Override
+    public List<String> getAllAsString(CharSequence name) {
+        return HeadersUtils.getAllAsString(this, name);
+    }
+
+    @Override
+    public Iterator<Entry<String, String>> iteratorAsString() {
+        return HeadersUtils.iteratorAsString(this);
+    }
+
+    @Override
+    public boolean contains(CharSequence name, CharSequence value) {
+        return contains(name, value, false);
+    }
+
+    @Override
+    public boolean contains(CharSequence name, CharSequence value, boolean ignoreCase) {
+        return contains(name, value,
+                ignoreCase ? CASE_INSENSITIVE_HASHER : CASE_SENSITIVE_HASHER);
     }
 }

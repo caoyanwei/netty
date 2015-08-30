@@ -15,15 +15,18 @@
  */
 package io.netty.handler.codec.stomp;
 
-import io.netty.handler.codec.AsciiString;
-import io.netty.handler.codec.TextHeaderProcessor;
-import io.netty.handler.codec.TextHeaders;
+import io.netty.handler.codec.Headers;
+import io.netty.util.AsciiString;
+
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map.Entry;
 
 /**
  * The multimap data structure for the STOMP header names and values. It also provides the constants for the standard
  * STOMP header names and values.
  */
-public interface StompHeaders extends TextHeaders {
+public interface StompHeaders extends Headers<CharSequence> {
 
     AsciiString ACCEPT_VERSION = new AsciiString("accept-version");
     AsciiString HOST = new AsciiString("host");
@@ -46,32 +49,134 @@ public interface StompHeaders extends TextHeaders {
     AsciiString CONTENT_TYPE = new AsciiString("content-type");
 
     @Override
-    StompHeaders add(CharSequence name, Object value);
+    StompHeaders add(CharSequence name, CharSequence value);
 
     @Override
-    StompHeaders add(CharSequence name, Iterable<?> values);
+    StompHeaders add(CharSequence name, Iterable<? extends CharSequence> values);
 
     @Override
-    StompHeaders add(CharSequence name, Object... values);
+    StompHeaders add(CharSequence name, CharSequence... values);
 
     @Override
-    StompHeaders add(TextHeaders headers);
+    StompHeaders addObject(CharSequence name, Object value);
 
     @Override
-    StompHeaders set(CharSequence name, Object value);
+    StompHeaders addObject(CharSequence name, Iterable<?> values);
 
     @Override
-    StompHeaders set(CharSequence name, Iterable<?> values);
+    StompHeaders addObject(CharSequence name, Object... values);
 
     @Override
-    StompHeaders set(CharSequence name, Object... values);
+    StompHeaders addBoolean(CharSequence name, boolean value);
 
     @Override
-    StompHeaders set(TextHeaders headers);
+    StompHeaders addByte(CharSequence name, byte value);
+
+    @Override
+    StompHeaders addChar(CharSequence name, char value);
+
+    @Override
+    StompHeaders addShort(CharSequence name, short value);
+
+    @Override
+    StompHeaders addInt(CharSequence name, int value);
+
+    @Override
+    StompHeaders addLong(CharSequence name, long value);
+
+    @Override
+    StompHeaders addFloat(CharSequence name, float value);
+
+    @Override
+    StompHeaders addDouble(CharSequence name, double value);
+
+    @Override
+    StompHeaders addTimeMillis(CharSequence name, long value);
+
+    @Override
+    StompHeaders add(Headers<? extends CharSequence> headers);
+
+    @Override
+    StompHeaders set(CharSequence name, CharSequence value);
+
+    @Override
+    StompHeaders set(CharSequence name, Iterable<? extends CharSequence> values);
+
+    @Override
+    StompHeaders set(CharSequence name, CharSequence... values);
+
+    @Override
+    StompHeaders setObject(CharSequence name, Object value);
+
+    @Override
+    StompHeaders setObject(CharSequence name, Iterable<?> values);
+
+    @Override
+    StompHeaders setObject(CharSequence name, Object... values);
+
+    @Override
+    StompHeaders setBoolean(CharSequence name, boolean value);
+
+    @Override
+    StompHeaders setByte(CharSequence name, byte value);
+
+    @Override
+    StompHeaders setChar(CharSequence name, char value);
+
+    @Override
+    StompHeaders setShort(CharSequence name, short value);
+
+    @Override
+    StompHeaders setInt(CharSequence name, int value);
+
+    @Override
+    StompHeaders setLong(CharSequence name, long value);
+
+    @Override
+    StompHeaders setFloat(CharSequence name, float value);
+
+    @Override
+    StompHeaders setDouble(CharSequence name, double value);
+
+    @Override
+    StompHeaders setTimeMillis(CharSequence name, long value);
+
+    @Override
+    StompHeaders set(Headers<? extends CharSequence> headers);
+
+    @Override
+    StompHeaders setAll(Headers<? extends CharSequence> headers);
 
     @Override
     StompHeaders clear();
 
-    @Override
-    StompHeaders forEachEntry(TextHeaderProcessor processor);
+    /**
+     * {@link Headers#get(Object)} and convert the result to a {@link String}.
+     * @param name the name of the header to retrieve
+     * @return the first header value if the header is found. {@code null} if there's no such header.
+     */
+    String getAsString(CharSequence name);
+
+    /**
+     * {@link Headers#getAll(Object)} and convert each element of {@link List} to a {@link String}.
+     * @param name the name of the header to retrieve
+     * @return a {@link List} of header values or an empty {@link List} if no values are found.
+     */
+    List<String> getAllAsString(CharSequence name);
+
+    /**
+     * {@link #iterator()} that converts each {@link Entry}'s key and value to a {@link String}.
+     */
+    Iterator<Entry<String, String>> iteratorAsString();
+
+    /**
+     * Returns {@code true} if a header with the {@code name} and {@code value} exists, {@code false} otherwise.
+     * <p>
+     * If {@code ignoreCase} is {@code true} then a case insensitive compare is done on the value.
+     * @param name the name of the header to find
+     * @param value the value of the header to find
+     * @param ignoreCase {@code true} then a case insensitive compare is run to compare values.
+     * otherwise a case sensitive compare is run to compare values.
+     */
+    boolean contains(CharSequence name, CharSequence value, boolean ignoreCase);
 }

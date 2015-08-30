@@ -46,7 +46,7 @@ import java.util.Set;
  */
 public class NioSctpServerChannel extends AbstractNioMessageChannel
         implements io.netty.channel.sctp.SctpServerChannel {
-    private static final ChannelMetadata METADATA = new ChannelMetadata(false);
+    private static final ChannelMetadata METADATA = new ChannelMetadata(false, 16);
 
     private static SctpServerChannel newSocket() {
         try {
@@ -218,6 +218,11 @@ public class NioSctpServerChannel extends AbstractNioMessageChannel
 
     @Override
     protected boolean doWriteMessage(Object msg, ChannelOutboundBuffer in) throws Exception {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    protected Object filterOutboundMessage(Object msg) throws Exception {
         throw new UnsupportedOperationException();
     }
 

@@ -67,12 +67,6 @@ import java.util.List;
  * between the original data and the copied buffer.  Various copy methods are
  * provided and their name is all {@code copiedBuffer()}.  It is also convenient
  * to use this operation to merge multiple buffers into one buffer.
- *
- * <h3>Miscellaneous utility methods</h3>
- *
- * This class also provides various utility methods to help implementation
- * of a new buffer type, generation of hex dump and swapping an integer's
- * byte order.
  */
 public final class Unpooled {
 
@@ -92,6 +86,10 @@ public final class Unpooled {
      * A buffer whose capacity is {@code 0}.
      */
     public static final ByteBuf EMPTY_BUFFER = ALLOC.buffer(0, 0);
+
+    static {
+        assert EMPTY_BUFFER instanceof EmptyByteBuf: "EMPTY_BUFFER must be an EmptyByteBuf.";
+    }
 
     /**
      * Creates a new big-endian Java heap buffer with reasonably small initial capacity, which
@@ -394,13 +392,11 @@ public final class Unpooled {
             return EMPTY_BUFFER;
         }
         byte[] copy = new byte[length];
-        int position = buffer.position();
-        try {
-            buffer.get(copy);
-        } finally {
-            buffer.position(position);
-        }
-        return wrappedBuffer(copy).order(buffer.order());
+        // Duplicate the buffer so we not adjust the position during our get operation.
+        // See https://github.com/netty/netty/issues/3896
+        ByteBuffer duplicate = buffer.duplicate();
+        duplicate.get(copy);
+        return wrappedBuffer(copy).order(duplicate.order());
     }
 
     /**
@@ -412,12 +408,7 @@ public final class Unpooled {
     public static ByteBuf copiedBuffer(ByteBuf buffer) {
         int readable = buffer.readableBytes();
         if (readable > 0) {
-            ByteBuf copy;
-            if (buffer.isDirect()) {
-                copy = directBuffer(readable);
-            } else {
-                copy = buffer(readable);
-            }
+            ByteBuf copy = buffer(readable);
             copy.writeBytes(buffer, buffer.readerIndex(), readable);
             return copy;
         } else {
@@ -568,11 +559,11 @@ public final class Unpooled {
 
         byte[] mergedArray = new byte[length];
         for (int i = 0, j = 0; i < buffers.length; i ++) {
-            ByteBuffer b = buffers[i];
+            // Duplicate the buffer so we not adjust the position during our get operation.
+            // See https://github.com/netty/netty/issues/3896
+            ByteBuffer b = buffers[i].duplicate();
             int bLen = b.remaining();
-            int oldPos = b.position();
             b.get(mergedArray, j, bLen);
-            b.position(oldPos);
             j += bLen;
         }
 
@@ -637,6 +628,9 @@ public final class Unpooled {
      * {@code 0} and the length of the encoded string respectively.
      */
     public static ByteBuf copiedBuffer(char[] array, Charset charset) {
+        if (array == null) {
+            throw new NullPointerException("array");
+        }
         return copiedBuffer(array, 0, array.length, charset);
     }
 
@@ -657,7 +651,7 @@ public final class Unpooled {
     }
 
     private static ByteBuf copiedBuffer(CharBuffer buffer, Charset charset) {
-        return ByteBufUtil.encodeString(ALLOC, buffer, charset);
+        return ByteBufUtil.encodeString0(ALLOC, true, buffer, charset);
     }
 
     /**

@@ -17,20 +17,15 @@
 package io.netty.handler.codec.http;
 
 import io.netty.buffer.ByteBuf;
-import io.netty.handler.codec.AsciiString;
-import io.netty.handler.codec.TextHeaderProcessor;
+import io.netty.buffer.ByteBufUtil;
+import io.netty.util.AsciiString;
 
-final class HttpHeadersEncoder implements TextHeaderProcessor {
+final class HttpHeadersEncoder {
 
-    private final ByteBuf buf;
-
-    HttpHeadersEncoder(ByteBuf buf) {
-        this.buf = buf;
+    private HttpHeadersEncoder() {
     }
 
-    @Override
-    public boolean process(CharSequence name, CharSequence value) throws Exception {
-        final ByteBuf buf = this.buf;
+    public static void encoderHeader(CharSequence name, CharSequence value, ByteBuf buf) throws Exception {
         final int nameLen = name.length();
         final int valueLen = value.length();
         final int entryLen = nameLen + valueLen + 4;
@@ -45,7 +40,6 @@ final class HttpHeadersEncoder implements TextHeaderProcessor {
         buf.setByte(offset ++, '\r');
         buf.setByte(offset ++, '\n');
         buf.writerIndex(offset);
-        return true;
     }
 
     private static void writeAscii(ByteBuf buf, int offset, CharSequence value, int valueLen) {
@@ -57,7 +51,7 @@ final class HttpHeadersEncoder implements TextHeaderProcessor {
     }
 
     private static void writeAsciiString(ByteBuf buf, int offset, AsciiString value, int valueLen) {
-        value.copy(0, buf, offset, valueLen);
+        ByteBufUtil.copy(value, 0, buf, offset, valueLen);
     }
 
     private static void writeCharSequence(ByteBuf buf, int offset, CharSequence value, int valueLen) {

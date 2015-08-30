@@ -16,14 +16,17 @@
 package io.netty.channel.epoll;
 
 import io.netty.buffer.ByteBuf;
-import io.netty.util.concurrent.FastThreadLocal;
+import io.netty.buffer.CompositeByteBuf;
+import io.netty.channel.ChannelOutboundBuffer.MessageProcessor;
 import io.netty.util.internal.PlatformDependent;
+
+import java.nio.ByteBuffer;
 
 /**
  * Represent an array of struct array and so can be passed directly over via JNI without the need to do any more
  * array copies.
  *
- * The buffers are written out directly into direct memory to match the struct iov. See also <code>man writev</code>.
+ * The buffers are written out directly into direct memory to match the struct iov. See also {@code man writev}.
  *
  * <pre>
  * struct iovec {
@@ -33,39 +36,37 @@ import io.netty.util.internal.PlatformDependent;
  * </pre>
  *
  * See also
- * <a href="http://rkennke.wordpress.com/2007/07/30/efficient-jni-programming-iv-wrapping-native-data-objects/">
- *     Efficient JNI programming IV: Wrapping native data objects</a>.
+ * <a href="http://rkennke.wordpress.com/2007/07/30/efficient-jni-programming-iv-wrapping-native-data-objects/"
+ * >Efficient JNI programming IV: Wrapping native data objects</a>.
  */
-final class IovArray {
-    // Maximal number of struct iov entries that can be passed to writev(...)
-    private static final int IOV_MAX = Native.IOV_MAX;
-    // The size of an address which should be 8 for 64 bits and 4 for 32 bits.
+final class IovArray implements MessageProcessor {
+
+    /** The size of an address which should be 8 for 64 bits and 4 for 32 bits. */
     private static final int ADDRESS_SIZE = PlatformDependent.addressSize();
-    // The size of an struct iov entry in bytes. This is calculated as we have 2 entries each of the size of the
-    // address.
+
+    /**
+     * The size of an {@code iovec} struct in bytes. This is calculated as we have 2 entries each of the size of the
+     * address.
+     */
     private static final int IOV_SIZE = 2 * ADDRESS_SIZE;
-    // The needed memory to hold up to IOV_MAX iov entries.
-    private static final int CAPACITY = IOV_MAX * IOV_SIZE;
 
-    private static final FastThreadLocal<IovArray> ARRAY = new FastThreadLocal<IovArray>() {
-        @Override
-        protected IovArray initialValue() throws Exception {
-            return new IovArray();
-        }
-
-        @Override
-        protected void onRemoval(IovArray value) throws Exception {
-            // free the direct memory now
-            PlatformDependent.freeMemory(value.memoryAddress);
-        }
-    };
+    /**
+     * The needed memory to hold up to {@link Native#IOV_MAX} iov entries, where {@link Native#IOV_MAX} signified
+     * the maximum number of {@code iovec} structs that can be passed to {@code writev(...)}.
+     */
+    private static final int CAPACITY = Native.IOV_MAX * IOV_SIZE;
 
     private final long memoryAddress;
     private int count;
     private long size;
 
-    private IovArray() {
+    IovArray() {
         memoryAddress = PlatformDependent.allocateMemory(CAPACITY);
+    }
+
+    void clear() {
+        count = 0;
+        size = 0;
     }
 
     /**
@@ -73,16 +74,44 @@ final class IovArray {
      * {@code false} otherwise.
      */
     boolean add(ByteBuf buf) {
-        if (count == IOV_MAX) {
+        if (count == Native.IOV_MAX) {
             // No more room!
             return false;
         }
-        int len = buf.readableBytes();
-        long addr = buf.memoryAddress();
-        int offset = buf.readerIndex();
 
-        long baseOffset = memoryAddress(count++);
-        long lengthOffset = baseOffset + ADDRESS_SIZE;
+        final int len = buf.readableBytes();
+        if (len == 0) {
+            // No need to add an empty buffer.
+            // We return true here because we want ChannelOutboundBuffer.forEachFlushedMessage() to continue
+            // fetching the next buffers.
+            return true;
+        }
+
+        final long addr = buf.memoryAddress();
+        final int offset = buf.readerIndex();
+        return add(addr, offset, len);
+    }
+
+    private boolean add(long addr, int offset, int len) {
+        if (len == 0) {
+            // No need to add an empty buffer.
+            return true;
+        }
+
+        final long baseOffset = memoryAddress(count++);
+        final long lengthOffset = baseOffset + ADDRESS_SIZE;
+
+        if (Native.SSIZE_MAX - len < size) {
+            // If the size + len will overflow an SSIZE_MAX we stop populate the IovArray. This is done as linux
+            //  not allow to write more bytes then SSIZE_MAX with one writev(...) call and so will
+            // return 'EINVAL', which will raise an IOException.
+            //
+            // See also:
+            // - http://linux.die.net/man/2/writev
+            return false;
+        }
+        size += len;
+
         if (ADDRESS_SIZE == 8) {
             // 64bit
             PlatformDependent.putLong(baseOffset, addr + offset);
@@ -92,7 +121,33 @@ final class IovArray {
             PlatformDependent.putInt(baseOffset, (int) addr + offset);
             PlatformDependent.putInt(lengthOffset, len);
         }
-        size += len;
+        return true;
+    }
+
+    /**
+     * Try to add the given {@link CompositeByteBuf}. Returns {@code true} on success,
+     * {@code false} otherwise.
+     */
+    boolean add(CompositeByteBuf buf) {
+        ByteBuffer[] buffers = buf.nioBuffers();
+        if (count + buffers.length >= Native.IOV_MAX) {
+            // No more room!
+            return false;
+        }
+        for (int i = 0; i < buffers.length; i++) {
+            ByteBuffer nioBuffer = buffers[i];
+            int offset = nioBuffer.position();
+            int len = nioBuffer.limit() - nioBuffer.position();
+            if (len == 0) {
+                // No need to add an empty buffer so just continue
+                continue;
+            }
+            long addr = PlatformDependent.directBufferAddress(nioBuffer);
+
+            if (!add(addr, offset, len)) {
+                return false;
+            }
+        }
         return true;
     }
 
@@ -148,12 +203,21 @@ final class IovArray {
     }
 
     /**
-     * Returns a {@link IovArray} which can be filled.
+     * Release the {@link IovArray}. Once release further using of it may crash the JVM!
      */
-    static IovArray get() {
-        IovArray array = ARRAY.get();
-        array.size = 0;
-        array.count = 0;
-        return array;
+    void release() {
+        PlatformDependent.freeMemory(memoryAddress);
+    }
+
+    @Override
+    public boolean processMessage(Object msg) throws Exception {
+        if (msg instanceof ByteBuf) {
+            if (msg instanceof CompositeByteBuf) {
+                return add((CompositeByteBuf) msg);
+            } else {
+                return add((ByteBuf) msg);
+            }
+        }
+        return false;
     }
 }

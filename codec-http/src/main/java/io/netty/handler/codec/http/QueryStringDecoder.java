@@ -31,10 +31,10 @@ import java.util.Map;
  * This decoder is for one time use only.  Create a new instance for each URI:
  * <pre>
  * {@link QueryStringDecoder} decoder = new {@link QueryStringDecoder}("/hello?recipient=world&x=1;y=2");
- * assert decoder.getPath().equals("/hello");
- * assert decoder.getParameters().get("recipient").get(0).equals("world");
- * assert decoder.getParameters().get("x").get(0).equals("1");
- * assert decoder.getParameters().get("y").get(0).equals("2");
+ * assert decoder.path().equals("/hello");
+ * assert decoder.parameters().get("recipient").get(0).equals("world");
+ * assert decoder.parameters().get("x").get(0).equals("1");
+ * assert decoder.parameters().get("y").get(0).equals("2");
  * </pre>
  *
  * This decoder can also decode the content of an HTTP POST request whose
@@ -46,7 +46,7 @@ import java.util.Map;
  *
  * <h3>HashDOS vulnerability fix</h3>
  *
- * As a workaround to the <a href="http://goo.gl/I4Nky">HashDOS</a> vulnerability, the decoder
+ * As a workaround to the <a href="http://netty.io/s/hashdos">HashDOS</a> vulnerability, the decoder
  * limits the maximum number of decoded key-value parameter pairs, up to {@literal 1024} by
  * default, and you can configure it when you construct the decoder by passing an additional
  * integer parameter.
@@ -159,10 +159,17 @@ public class QueryStringDecoder {
             hasPath = false;
         }
         // Also take care of cut of things like "http://localhost"
-        this.uri = rawPath + '?' + uri.getRawQuery();
+        this.uri = rawPath + (uri.getRawQuery() == null? "" : '?' + uri.getRawQuery());
 
         this.charset = charset;
         this.maxParams = maxParams;
+    }
+
+    /**
+     * Returns the uri used to initialize this {@link QueryStringDecoder}.
+     */
+    public String uri() {
+        return uri;
     }
 
     /**

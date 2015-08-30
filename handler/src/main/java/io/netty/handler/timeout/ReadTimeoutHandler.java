@@ -32,7 +32,7 @@ import java.util.concurrent.TimeUnit;
  * // The connection is closed when there is no inbound traffic
  * // for 30 seconds.
  *
- * public class MyChannelInitializer extends {@link ChannelInitializer}&lt{@link Channel}&gt {
+ * public class MyChannelInitializer extends {@link ChannelInitializer}&lt;{@link Channel}&gt; {
  *     public void initChannel({@link Channel} channel) {
  *         channel.pipeline().addLast("readTimeoutHandler", new {@link ReadTimeoutHandler}(30);
  *         channel.pipeline().addLast("myHandler", new MyHandler());
@@ -65,11 +65,13 @@ public class ReadTimeoutHandler extends ChannelHandlerAdapter {
 
     private final long timeoutNanos;
 
+    private long lastReadTime;
+
     private volatile ScheduledFuture<?> timeout;
-    private volatile long lastReadTime;
 
     private volatile int state; // 0 - none, 1 - Initialized, 2 - Destroyed;
 
+    private volatile boolean reading;
     private boolean closed;
 
     /**
@@ -145,8 +147,15 @@ public class ReadTimeoutHandler extends ChannelHandlerAdapter {
 
     @Override
     public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
-        lastReadTime = System.nanoTime();
+        reading = true;
         ctx.fireChannelRead(msg);
+    }
+
+    @Override
+    public void channelReadComplete(ChannelHandlerContext ctx) throws Exception {
+        lastReadTime = System.nanoTime();
+        reading = false;
+        ctx.fireChannelReadComplete();
     }
 
     private void initialize(ChannelHandlerContext ctx) {
@@ -202,8 +211,11 @@ public class ReadTimeoutHandler extends ChannelHandlerAdapter {
                 return;
             }
 
-            long currentTime = System.nanoTime();
-            long nextDelay = timeoutNanos - (currentTime - lastReadTime);
+            long nextDelay = timeoutNanos;
+            if (!reading) {
+                nextDelay -= System.nanoTime() - lastReadTime;
+            }
+
             if (nextDelay <= 0) {
                 // Read timed out - set a new timeout and notify the callback.
                 timeout = ctx.executor().schedule(this, timeoutNanos, TimeUnit.NANOSECONDS);

@@ -15,6 +15,7 @@
 
 package io.netty.handler.codec.http2;
 
+import static io.netty.handler.codec.http2.Http2CodecUtil.MAX_FRAME_SIZE_UPPER_BOUND;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
@@ -41,6 +42,8 @@ public class Http2SettingsTest {
         assertNull(settings.initialWindowSize());
         assertNull(settings.maxConcurrentStreams());
         assertNull(settings.pushEnabled());
+        assertNull(settings.maxFrameSize());
+        assertNull(settings.maxHeaderListSize());
     }
 
     @Test
@@ -49,9 +52,38 @@ public class Http2SettingsTest {
         settings.maxConcurrentStreams(2);
         settings.pushEnabled(true);
         settings.headerTableSize(3);
+        settings.maxFrameSize(MAX_FRAME_SIZE_UPPER_BOUND);
+        settings.maxHeaderListSize(4);
         assertEquals(1, (int) settings.initialWindowSize());
         assertEquals(2L, (long) settings.maxConcurrentStreams());
         assertTrue(settings.pushEnabled());
         assertEquals(3L, (long) settings.headerTableSize());
+        assertEquals(MAX_FRAME_SIZE_UPPER_BOUND, (int) settings.maxFrameSize());
+        assertEquals(4L, (long) settings.maxHeaderListSize());
+    }
+
+    @Test
+    public void nonStandardSettingsShouldBeSet() {
+        char key = 0;
+        settings.put(key, (Long) 123L);
+        assertEquals(123L, (long) settings.get(key));
+    }
+
+    @Test
+    public void settingsShouldSupportUnsignedShort() {
+        char key = (char) (Short.MAX_VALUE + 1);
+        settings.put(key, (Long) 123L);
+        assertEquals(123L, (long) settings.get(key));
+    }
+
+    @Test
+    public void boundarySettingsShouldBeSet() {
+        final long overIntegerMaxValue = 1L << 31;
+        settings.maxHeaderListSize((int) overIntegerMaxValue);
+        assertEquals(Integer.MAX_VALUE, (long) settings.maxHeaderListSize());
+
+        final long settingsValueUpperBound = (1L << 32) - 1L;
+        settings.maxHeaderListSize((int) settingsValueUpperBound);
+        assertEquals(Integer.MAX_VALUE, (long) settings.maxHeaderListSize());
     }
 }

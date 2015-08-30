@@ -21,8 +21,6 @@ import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.handler.codec.MessageToByteEncoder;
-import io.netty.handler.codec.http.HttpHeaders.Names;
-import io.netty.handler.codec.http.HttpHeaders.Values;
 import io.netty.util.CharsetUtil;
 import org.junit.Test;
 
@@ -83,7 +81,7 @@ public class HttpContentEncoderTest {
         ch.writeInbound(new DefaultFullHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.GET, "/"));
 
         HttpResponse res = new DefaultHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK);
-        res.headers().set(Names.TRANSFER_ENCODING, Values.CHUNKED);
+        res.headers().set(HttpHeaderNames.TRANSFER_ENCODING, HttpHeaderValues.CHUNKED);
         ch.writeOutbound(res);
 
         assertEncodedResponse(ch);
@@ -120,7 +118,7 @@ public class HttpContentEncoderTest {
         ch.writeInbound(new DefaultFullHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.GET, "/"));
 
         HttpResponse res = new DefaultHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK);
-        res.headers().set(Names.TRANSFER_ENCODING, Values.CHUNKED);
+        res.headers().set(HttpHeaderNames.TRANSFER_ENCODING, HttpHeaderValues.CHUNKED);
         ch.writeOutbound(res);
 
         assertEncodedResponse(ch);
@@ -161,7 +159,7 @@ public class HttpContentEncoderTest {
 
         FullHttpResponse res = new DefaultFullHttpResponse(
                 HttpVersion.HTTP_1_1, HttpResponseStatus.OK, Unpooled.wrappedBuffer(new byte[42]));
-        res.headers().set(Names.CONTENT_LENGTH, 42);
+        res.headers().setInt(HttpHeaderNames.CONTENT_LENGTH, 42);
         ch.writeOutbound(res);
 
         assertEncodedResponse(ch);
@@ -219,10 +217,10 @@ public class HttpContentEncoderTest {
         assertThat(o, is(instanceOf(FullHttpResponse.class)));
 
         res = (FullHttpResponse) o;
-        assertThat(res.headers().get(Names.TRANSFER_ENCODING), is(nullValue()));
+        assertThat(res.headers().get(HttpHeaderNames.TRANSFER_ENCODING), is(nullValue()));
 
         // Content encoding shouldn't be modified.
-        assertThat(res.headers().get(Names.CONTENT_ENCODING), is(nullValue()));
+        assertThat(res.headers().get(HttpHeaderNames.CONTENT_ENCODING), is(nullValue()));
         assertThat(res.content().readableBytes(), is(0));
         assertThat(res.content().toString(CharsetUtil.US_ASCII), is(""));
         res.release();
@@ -244,13 +242,103 @@ public class HttpContentEncoderTest {
         assertThat(o, is(instanceOf(FullHttpResponse.class)));
 
         res = (FullHttpResponse) o;
-        assertThat(res.headers().get(Names.TRANSFER_ENCODING), is(nullValue()));
+        assertThat(res.headers().get(HttpHeaderNames.TRANSFER_ENCODING), is(nullValue()));
 
         // Content encoding shouldn't be modified.
-        assertThat(res.headers().get(Names.CONTENT_ENCODING), is(nullValue()));
+        assertThat(res.headers().get(HttpHeaderNames.CONTENT_ENCODING), is(nullValue()));
         assertThat(res.content().readableBytes(), is(0));
         assertThat(res.content().toString(CharsetUtil.US_ASCII), is(""));
         assertEquals("Netty", res.trailingHeaders().get("X-Test"));
+        assertThat(ch.readOutbound(), is(nullValue()));
+    }
+
+    @Test
+    public void testEmptyHeadResponse() throws Exception {
+        EmbeddedChannel ch = new EmbeddedChannel(new TestEncoder());
+        HttpRequest req = new DefaultFullHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.HEAD, "/");
+        ch.writeInbound(req);
+
+        HttpResponse res = new DefaultHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK);
+        res.headers().set(HttpHeaderNames.TRANSFER_ENCODING, HttpHeaderValues.CHUNKED);
+        ch.writeOutbound(res);
+        ch.writeOutbound(LastHttpContent.EMPTY_LAST_CONTENT);
+
+        assertEmptyResponse(ch);
+    }
+
+    @Test
+    public void testHttp304Response() throws Exception {
+        EmbeddedChannel ch = new EmbeddedChannel(new TestEncoder());
+        HttpRequest req = new DefaultFullHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.GET, "/");
+        req.headers().set(HttpHeaderNames.ACCEPT_ENCODING, HttpHeaderValues.GZIP);
+        ch.writeInbound(req);
+
+        HttpResponse res = new DefaultHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.NOT_MODIFIED);
+        res.headers().set(HttpHeaderNames.TRANSFER_ENCODING, HttpHeaderValues.CHUNKED);
+        ch.writeOutbound(res);
+        ch.writeOutbound(LastHttpContent.EMPTY_LAST_CONTENT);
+
+        assertEmptyResponse(ch);
+    }
+
+    @Test
+    public void testConnect200Response() throws Exception {
+        EmbeddedChannel ch = new EmbeddedChannel(new TestEncoder());
+        HttpRequest req = new DefaultFullHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.CONNECT, "google.com:80");
+        ch.writeInbound(req);
+
+        HttpResponse res = new DefaultHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK);
+        res.headers().set(HttpHeaderNames.TRANSFER_ENCODING, HttpHeaderValues.CHUNKED);
+        ch.writeOutbound(res);
+        ch.writeOutbound(LastHttpContent.EMPTY_LAST_CONTENT);
+
+        assertEmptyResponse(ch);
+    }
+
+    @Test
+    public void testConnectFailureResponse() throws Exception {
+        String content = "Not allowed by configuration";
+
+        EmbeddedChannel ch = new EmbeddedChannel(new TestEncoder());
+        HttpRequest req = new DefaultFullHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.CONNECT, "google.com:80");
+        ch.writeInbound(req);
+
+        HttpResponse res = new DefaultHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.METHOD_NOT_ALLOWED);
+        res.headers().set(HttpHeaderNames.TRANSFER_ENCODING, HttpHeaderValues.CHUNKED);
+        ch.writeOutbound(res);
+        ch.writeOutbound(new DefaultHttpContent(Unpooled.wrappedBuffer(content.getBytes(CharsetUtil.UTF_8))));
+        ch.writeOutbound(LastHttpContent.EMPTY_LAST_CONTENT);
+
+        assertEncodedResponse(ch);
+        Object o = ch.readOutbound();
+        assertThat(o, is(instanceOf(HttpContent.class)));
+        HttpContent chunk = (HttpContent) o;
+        assertThat(chunk.content().toString(CharsetUtil.US_ASCII), is("28"));
+        chunk.release();
+
+        chunk = ch.readOutbound();
+        assertThat(chunk.content().isReadable(), is(true));
+        assertThat(chunk.content().toString(CharsetUtil.US_ASCII), is("0"));
+        chunk.release();
+
+        chunk = ch.readOutbound();
+        assertThat(chunk, is(instanceOf(LastHttpContent.class)));
+        chunk.release();
+        assertThat(ch.readOutbound(), is(nullValue()));
+    }
+
+    private static void assertEmptyResponse(EmbeddedChannel ch) {
+        Object o = ch.readOutbound();
+        assertThat(o, is(instanceOf(HttpResponse.class)));
+
+        HttpResponse res = (HttpResponse) o;
+        assertThat(res, is(not(instanceOf(HttpContent.class))));
+        assertThat(res.headers().getAsString(HttpHeaderNames.TRANSFER_ENCODING), is("chunked"));
+        assertThat(res.headers().get(HttpHeaderNames.CONTENT_LENGTH), is(nullValue()));
+
+        HttpContent chunk = ch.readOutbound();
+        assertThat(chunk, is(instanceOf(LastHttpContent.class)));
+        chunk.release();
         assertThat(ch.readOutbound(), is(nullValue()));
     }
 
@@ -260,8 +348,8 @@ public class HttpContentEncoderTest {
 
         HttpResponse res = (HttpResponse) o;
         assertThat(res, is(not(instanceOf(HttpContent.class))));
-        assertThat(res.headers().get(Names.TRANSFER_ENCODING), is("chunked"));
-        assertThat(res.headers().get(Names.CONTENT_LENGTH), is(nullValue()));
-        assertThat(res.headers().get(Names.CONTENT_ENCODING), is("test"));
+        assertThat(res.headers().getAsString(HttpHeaderNames.TRANSFER_ENCODING), is("chunked"));
+        assertThat(res.headers().get(HttpHeaderNames.CONTENT_LENGTH), is(nullValue()));
+        assertThat(res.headers().getAsString(HttpHeaderNames.CONTENT_ENCODING), is("test"));
     }
 }

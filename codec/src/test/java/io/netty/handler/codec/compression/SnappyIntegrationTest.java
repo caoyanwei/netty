@@ -20,7 +20,7 @@ import org.junit.Test;
 
 import java.util.Random;
 
-public class SnappyIntegrationTest extends IntegrationTest {
+public class SnappyIntegrationTest extends AbstractIntegrationTest {
 
     /**
      * The number of random regression tests run by testRandom() runs.  Whenever testRandom() finds the case that
@@ -32,13 +32,13 @@ public class SnappyIntegrationTest extends IntegrationTest {
     private static final int RANDOM_RUNS = 1;
 
     @Override
-    protected EmbeddedChannel createEncoderEmbeddedChannel() {
-        return new EmbeddedChannel(new SnappyFramedEncoder());
+    protected EmbeddedChannel createEncoder() {
+        return new EmbeddedChannel(new SnappyFrameEncoder());
     }
 
     @Override
-    protected EmbeddedChannel createDecoderEmbeddedChannel() {
-        return new EmbeddedChannel(new SnappyFramedDecoder());
+    protected EmbeddedChannel createDecoder() {
+        return new EmbeddedChannel(new SnappyFrameDecoder());
     }
 
     @Test

@@ -15,10 +15,13 @@
  */
 package io.netty.handler.codec.http;
 
+import static io.netty.handler.codec.http.HttpConstants.CR;
+import static io.netty.handler.codec.http.HttpConstants.LF;
+import static io.netty.handler.codec.http.HttpConstants.SP;
 import io.netty.buffer.ByteBuf;
+import io.netty.buffer.ByteBufUtil;
+import io.netty.util.AsciiString;
 import io.netty.util.CharsetUtil;
-
-import static io.netty.handler.codec.http.HttpConstants.*;
 
 /**
  * Encodes an {@link HttpRequest} or an {@link HttpContent} into
@@ -26,6 +29,7 @@ import static io.netty.handler.codec.http.HttpConstants.*;
  */
 public class HttpRequestEncoder extends HttpObjectEncoder<HttpRequest> {
     private static final char SLASH = '/';
+    private static final char QUESTION_MARK = '?';
     private static final byte[] CRLF = { CR, LF };
 
     @Override
@@ -35,7 +39,8 @@ public class HttpRequestEncoder extends HttpObjectEncoder<HttpRequest> {
 
     @Override
     protected void encodeInitialLine(ByteBuf buf, HttpRequest request) throws Exception {
-        request.method().encode(buf);
+        AsciiString method = request.method().asciiName();
+        ByteBufUtil.copy(method, method.arrayOffset(), buf, method.length());
         buf.writeByte(SP);
 
         // Add / as absolute path if no is present.
@@ -48,16 +53,31 @@ public class HttpRequestEncoder extends HttpObjectEncoder<HttpRequest> {
             int start = uri.indexOf("://");
             if (start != -1 && uri.charAt(0) != SLASH) {
                 int startIndex = start + 3;
-                if (uri.lastIndexOf(SLASH) <= startIndex) {
-                    uri += SLASH;
+                // Correctly handle query params.
+                // See https://github.com/netty/netty/issues/2732
+                int index = uri.indexOf(QUESTION_MARK, startIndex);
+                if (index == -1) {
+                    if (uri.lastIndexOf(SLASH) <= startIndex) {
+                        uri += SLASH;
+                    }
+                } else {
+                    if (uri.lastIndexOf(SLASH, index) <= startIndex) {
+                        int len = uri.length();
+                        StringBuilder sb = new StringBuilder(len + 1);
+                        sb.append(uri, 0, index)
+                          .append(SLASH)
+                          .append(uri, index, len);
+                        uri = sb.toString();
+                    }
                 }
             }
         }
 
         buf.writeBytes(uri.getBytes(CharsetUtil.UTF_8));
-
         buf.writeByte(SP);
-        request.protocolVersion().encode(buf);
+
+        AsciiString version = request.protocolVersion().text();
+        ByteBufUtil.copy(version, version.arrayOffset(), buf, version.length());
         buf.writeBytes(CRLF);
     }
 }

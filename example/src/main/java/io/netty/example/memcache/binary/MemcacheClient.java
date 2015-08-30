@@ -24,15 +24,14 @@ import io.netty.channel.EventLoopGroup;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
-import io.netty.handler.codec.http2.Http2OrHttpChooser.SelectedProtocol;
 import io.netty.handler.codec.memcache.binary.BinaryMemcacheClientCodec;
 import io.netty.handler.codec.memcache.binary.BinaryMemcacheObjectAggregator;
 import io.netty.handler.ssl.SslContext;
+import io.netty.handler.ssl.SslContextBuilder;
 import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
-import java.util.Arrays;
 
 /**
  * Simple memcache client that demonstrates get and set commands against a memcache server.
@@ -47,10 +46,8 @@ public final class MemcacheClient {
         // Configure SSL.
         final SslContext sslCtx;
         if (SSL) {
-            sslCtx = SslContext.newClientContext(
-                    null, InsecureTrustManagerFactory.INSTANCE, null,
-                    Arrays.asList(SelectedProtocol.HTTP_2.protocolName(), SelectedProtocol.HTTP_1_1.protocolName()),
-                    0, 0);
+            sslCtx = SslContextBuilder.forClient()
+                .trustManager(InsecureTrustManagerFactory.INSTANCE).build();
         } else {
             sslCtx = null;
         }
